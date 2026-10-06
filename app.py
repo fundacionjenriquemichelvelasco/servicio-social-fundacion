@@ -327,6 +327,9 @@ elif st.session_state["usuario_rol"] == "estudiante":
 # =============================================================
 # 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
 # =============================================================
+# =============================================================
+# 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
+# =============================================================
 elif st.session_state["usuario_rol"] == "admin":
     st.sidebar.title("Administradora")
     if st.sidebar.button("Cerrar Sesión"):
@@ -335,14 +338,21 @@ elif st.session_state["usuario_rol"] == "admin":
 
     st.title("Control de Servicio Social")
 
-    res_g_all = supabase.table("grupos").select("nombre_grupo, estado_grupo").order("nombre_grupo").execute()
-    grupos_list = [g["nombre_grupo"] for g in res_g_all.data] if res_g_all.data else []
+    # --- CONSULTA SEGURA DE GRUPOS ---
+    grupos_list = []
+    try:
+        res_g_all = supabase.table("grupos").select("nombre_grupo, estado_grupo").order("nombre_grupo").execute()
+        if res_g_all.data:
+            grupos_list = [g["nombre_grupo"] for g in res_g_all.data]
+    except Exception as e:
+        st.error(f"Nota de conexión con la tabla 'grupos': {e}")
+        grupos_list = []
 
     if grupos_list:
         grupo_activo = st.selectbox("Selecciona el Grupo de Trabajo activo:", grupos_list)
     else:
         grupo_activo = None
-        st.warning("Crea un grupo de trabajo en la pestaña 'Configuración y Grupos'.")
+        st.warning("No hay grupos registrados aún. Crea tu primer grupo de trabajo en la pestaña '⚙️ Configuración y Grupos'.")
 
     tab_a1, tab_a2, tab_a3 = st.tabs([
         "Alumnos y Expediente", 
