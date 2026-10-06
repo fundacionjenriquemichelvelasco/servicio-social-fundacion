@@ -104,6 +104,21 @@ if st.session_state["usuario_rol"] is None:
                 password_admin = st.text_input("Contraseña", type="password")
                 submit_admin = st.form_submit_button("Iniciar Sesión")
 
+            # --- BOTÓN TEMPORAL PARA REGISTRAR LA CUENTA OFICIAL ---
+            st.markdown("---")
+            if st.button("➕ Crear / Registrar esta cuenta de Administradora"):
+                if email_admin and password_admin:
+                    try:
+                        res = supabase.auth.sign_up({
+                            "email": email_admin.strip(),
+                            "password": password_admin.strip()
+                        })
+                        st.success("¡Cuenta registrada con éxito en Supabase! Ahora ve a Supabase > Users y confirma el email si te lo solicita.")
+                    except Exception as e:
+                        st.error(f"Error al registrar: {e}")
+                else:
+                    st.warning("Escribe el correo y la contraseña arriba antes de presionar este botón.")
+
             if submit_admin:
                 if not email_admin.strip() or not password_admin.strip():
                     st.warning("Por favor, ingresa tanto tu correo como tu contraseña.")
