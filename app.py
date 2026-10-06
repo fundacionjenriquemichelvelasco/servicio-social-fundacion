@@ -98,33 +98,37 @@ if st.session_state["usuario_rol"] is None:
         else:
             st.info("Ingresa tus credenciales administrativas para iniciar sesión.")
             
-            # --- NUEVO FORMULARIO DE INICIO DE SESIÓN CON CONTRASEÑA ---
+            # --- FORMULARIO DE INICIO DE SESIÓN Y REGISTRO ---
             with st.form("admin_login_form"):
                 email_admin = st.text_input("Correo electrónico de la Administradora")
                 password_admin = st.text_input("Contraseña", type="password")
-                submit_admin = st.form_submit_button("Iniciar Sesión")
+                
+                col_btn1, col_btn2 = st.columns(2)
+                with col_btn1:
+                    submit_admin = st.form_submit_button("Iniciar Sesión")
+                with col_btn2:
+                    submit_register = st.form_submit_button("➕ Crear / Registrar Cuenta")
 
-            # --- BOTÓN TEMPORAL PARA REGISTRAR LA CUENTA OFICIAL ---
-            st.markdown("---")
-            if st.button("➕ Crear / Registrar esta cuenta de Administradora"):
-                if email_admin and password_admin:
+            # --- LÓGICA DEL BOTÓN: REGISTRAR CUENTA ---
+            if submit_register:
+                if email_admin.strip() and password_admin.strip():
                     try:
                         res = supabase.auth.sign_up({
                             "email": email_admin.strip(),
                             "password": password_admin.strip()
                         })
-                        st.success("¡Cuenta registrada con éxito en Supabase! Ahora ve a Supabase > Users y confirma el email si te lo solicita.")
+                        st.success("¡Cuenta registrada con éxito en Supabase! Si no entra directo, confirma el email en el panel de Supabase Users.")
                     except Exception as e:
                         st.error(f"Error al registrar: {e}")
                 else:
-                    st.warning("Escribe el correo y la contraseña arriba antes de presionar este botón.")
+                    st.warning("Por favor, escribe tanto el correo como la contraseña.")
 
+            # --- LÓGICA DEL BOTÓN: INICIAR SESIÓN ---
             if submit_admin:
                 if not email_admin.strip() or not password_admin.strip():
                     st.warning("Por favor, ingresa tanto tu correo como tu contraseña.")
                 else:
                     try:
-                        # Autenticación directa en Supabase con correo y contraseña
                         res = supabase.auth.sign_in_with_password({
                             "email": email_admin.strip(),
                             "password": password_admin.strip()
