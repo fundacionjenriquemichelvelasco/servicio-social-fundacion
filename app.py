@@ -42,7 +42,7 @@ def calcular_y_actualizar_horas(id_servicio: int, grupo_semestre: str):
 
         res_inv = supabase.table("investigaciones").select("titulo_entrega").eq("id_servicio", id_servicio).execute()
         
-        # Filtramos entregas únicas por título para evitar sumar doble si el alumno subió 2 veces el mismo PDF
+        # Filtramos entregas únicas por título para evitar sumar doble
         entregas_unicas = set(e["titulo_entrega"] for e in res_inv.data) if res_inv.data else set()
         
         total_horas_entregables = 0
@@ -167,7 +167,7 @@ if st.session_state["usuario_rol"] is None:
                         grp_limpio = limpiar_texto(grupo_auto)
                         
                         ruta_foda = f"expedientes/{grp_limpio}/{mat_limpia}/foda/{mat_limpia}_foda.pdf"
-                        bytes_archivo = archivo_foda.read()
+                        bytes_archivo = archivo_foda.getvalue()
 
                         supabase.storage.from_("fodas").upload(
                             path=ruta_foda,
@@ -315,7 +315,7 @@ elif st.session_state["usuario_rol"] == "estudiante":
                                 ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{nom_tarea_limpia}.pdf"
                                 supabase.storage.from_("investigaciones").upload(
                                     path=ruta_tarea,
-                                    file=archivo_tarea.read(),
+                                    file=archivo_tarea.getvalue(),
                                     file_options={"content-type": "application/pdf", "upsert": "true"}
                                 )
                                 url_tarea = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
@@ -375,7 +375,7 @@ elif st.session_state["usuario_rol"] == "admin":
                 opciones_alumnos = {}
 
                 for d in res_ss.data:
-                    al = d.get("alumnos", {})
+                    al = d.get("alumnos", {}) or {}
                     mat_al = al.get("matricula", "")
                     nombre_al = al.get("nombre", "")
                     
@@ -408,7 +408,7 @@ elif st.session_state["usuario_rol"] == "admin":
                     st.subheader("Editar o Eliminar Alumno")
                     alumno_sel_edit = st.selectbox("Selecciona Alumno para gestionar:", list(opciones_alumnos.keys()))
                     reg_edit = opciones_alumnos[alumno_sel_edit]
-                    al_data_edit = reg_edit.get("alumnos", {})
+                    al_data_edit = reg_edit.get("alumnos", {}) or {}
 
                     with st.expander("Formulario de Edición"):
                         new_nom = st.text_input("Nombre Completo:", value=al_data_edit.get("nombre", ""))
@@ -444,7 +444,7 @@ elif st.session_state["usuario_rol"] == "admin":
 
                             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                                 for reg in res_ss.data:
-                                    al_info = reg.get("alumnos", {})
+                                    al_info = reg.get("alumnos", {}) or {}
                                     mat = limpiar_texto(al_info.get("matricula", "desconocido"))
                                     nom = limpiar_texto(al_info.get("nombre", "alumno"))
                                     id_serv = reg["id_servicio"]
@@ -515,16 +515,16 @@ elif st.session_state["usuario_rol"] == "admin":
                 st.write("### Evidencias Fotográficas de Hoy")
 
                 res_asist_fotos = supabase.table("asistencias").select(
-                    "fecha, url_foto, created_at, servicio_social!inner(grupo_semestre), alumnos(matricula, nombre)"
-                ).eq("servicio_social.grupo_semestre", grupo_activo).eq("fecha", hoy_str).order("created_at", desc=True).execute()
+                    "fecha, url_foto, created_at, alumnos(matricula, nombre)"
+                ).eq("fecha", hoy_str).order("created_at", desc=True).execute()
 
                 if res_asist_fotos.data:
                     cols = st.columns(4)
                     for idx, item in enumerate(res_asist_fotos.data):
-                        al_data = item.get("alumnos", {})
+                        al_data = item.get("alumnos", {}) or {}
                         foto_url = item.get("url_foto")
                         with cols[idx % 4]:
-                            st.caption(f"{item['fecha']} - {al_data.get('nombre')}")
+                            st.caption(f"{item['fecha']} - {al_data.get('nombre', 'Sin nombre')}")
                             if foto_url:
                                 st.image(foto_url, use_container_width=True)
                 else:
@@ -541,13 +541,13 @@ elif st.session_state["usuario_rol"] == "admin":
                     tarea_filtro = st.selectbox("Selecciona la tarea a revisar:", lista_tareas)
 
                     res_entregas = supabase.table("investigaciones").select(
-                        "created_at, url_pdf, alumnos(matricula, nombre), servicio_social!inner(grupo_semestre)"
-                    ).eq("titulo_entrega", tarea_filtro).eq("servicio_social.grupo_semestre", grupo_activo).execute()
+                        "created_at, url_pdf, alumnos(matricula, nombre)"
+                    ).eq("titulo_entrega", tarea_filtro).execute()
 
                     if res_entregas.data:
                         tabla_rev = []
                         for ent in res_entregas.data:
-                            al_info = ent.get("alumnos", {})
+                            al_info = ent.get("alumnos", {}) or {}
                             tabla_rev.append({
                                 "Matrícula": al_info.get("matricula"),
                                 "Alumno": al_info.get("nombre"),
@@ -600,27 +600,26 @@ elif st.session_state["usuario_rol"] == "admin":
                 
                 c_f, c_h = st.columns(2)
                 with c_f:
-                    f_limite = st.date_input("Fecha Límite", value=datetime.date.today() + datetime.timedelta(days=7))
+                    f_limite = st.date_input("Fecha límite", value=datetime.date.today() + datetime.timedelta(days=7))
                 with c_h:
-                    h_limite = st.time_input("Hora Límite", value=datetime.time(23, 59))
-
-                if st.button("Publicar Tarea para el Grupo"):
+                    h_limite = st.time_input("Hora límite", value=datetime.time(23, 59))
+                
+                if st.button("Asignar Tarea al Grupo"):
                     if nom_tarea.strip():
-                        try:
-                            dt_combinada = datetime.datetime.combine(f_limite, h_limite).replace(tzinfo=datetime.timezone.utc).isoformat()
-                            
-                            supabase.table("catalogo_entregables").insert({
-                                "grupo_semestre": grupo_activo,
-                                "nombre_entregable": nom_tarea.strip(),
-                                "horas_valor": hrs_tarea,
-                                "descripcion": desc_tarea,
-                                "fecha_limite": dt_combinada,
-                                "activo": True
-                            }).execute()
-                            
-                            st.success(f"✅ Tarea '{nom_tarea.strip()}' publicada correctamente.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Error al publicar tarea: {e}")
+                        dt_combinado = datetime.datetime.combine(f_limite, h_limite)
+                        iso_limite = dt_combinado.isoformat()
+                        
+                        supabase.table("catalogo_entregables").insert({
+                            "grupo_semestre": grupo_activo,
+                            "nombre_entregable": nom_tarea.strip(),
+                            "horas_valor": int(hrs_tarea),
+                            "descripcion": desc_tarea.strip(),
+                            "fecha_limite": iso_limite,
+                            "activo": True
+                        }).execute()
+                        st.success(f"Tarea '{nom_tarea}' creada para el grupo {grupo_activo}.")
+                        st.rerun()
                     else:
-                        st.error("Ingresa un nombre para la tarea.")
+                        st.error("Ingresa un nombre válido para la tarea.")
+            else:
+                st.info("Selecciona o crea un grupo primero para asignar tareas.")
