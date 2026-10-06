@@ -284,11 +284,21 @@ elif st.session_state["usuario_rol"] == "estudiante":
                     es_a_tiempo = True
                     
                     if fecha_limite_str:
-                        limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
-                        ahora_dt = datetime.datetime.now(datetime.timezone.utc)
-                        st.warning(f"**Fecha límite de entrega:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
-                        if ahora_dt > limite_dt:
-                            es_a_tiempo = False
+                        try:
+                            # Convertimos la fecha límite a objeto datetime
+                            limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
+                            
+                            # Si la fecha límite tiene zona horaria, comparamos con UTC; si no, usamos la hora local
+                            if limite_dt.tzinfo is not None:
+                                ahora_dt = datetime.datetime.now(datetime.timezone.utc)
+                            else:
+                                ahora_dt = datetime.datetime.now()
+
+                            st.warning(f"**Fecha límite de entrega:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
+                            if ahora_dt > limite_dt:
+                                es_a_tiempo = False
+                        except Exception as e_date:
+                            st.warning(f"No se pudo calcular la fecha límite exactamente: {e_date}")
 
                     if not es_a_tiempo:
                         st.error("El tiempo para entregar esta tarea ha expirado. Ya no se aceptan archivos.")
