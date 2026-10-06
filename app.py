@@ -96,39 +96,31 @@ if st.session_state["usuario_rol"] is None:
                         st.error("Matrícula no encontrada. Si eres nuevo estudiante, regístrate en la pestaña de al lado.")
 
         else:
-            st.info("✉️ Ingresa tu correo empresarial para recibir tu código de acceso.")
-            email_admin = st.text_input("Correo electrónico de la Administradora")
+            st.info("Ingresa tus credenciales administrativas para iniciar sesión.")
             
-            CORREOS_ADMIN_AUTORIZADOS = ["fundacionjenriquemichelvelasco@gmail.com"]
+            # --- NUEVO FORMULARIO DE INICIO DE SESIÓN CON CONTRASEÑA ---
+            with st.form("admin_login_form"):
+                email_admin = st.text_input("Correo electrónico de la Administradora")
+                password_admin = st.text_input("Contraseña", type="password")
+                submit_admin = st.form_submit_button("Iniciar Sesión")
 
-            col_a1, col_a2 = st.columns(2)
-            with col_a1:
-                if st.button("Enviar Código al Correo"):
-                    if email_admin.strip().lower() in [c.lower() for c in CORREOS_ADMIN_AUTORIZADOS]:
-                        try:
-                            supabase.auth.sign_in_with_otp({"email": email_admin.strip()})
-                            st.success("¡Código enviado! Revisa tu bandeja de entrada o spam.")
-                        except Exception as e:
-                            st.error(f"Error al enviar correo: {e}")
-                    else:
-                        st.error("Este correo no tiene permisos de Administradora.")
-
-            codigo_otp = st.text_input("Ingresa el código de 6 dígitos recibido:", type="password")
-            if st.button("Verificar e Iniciar Sesión"):
-                if email_admin and codigo_otp:
+            if submit_admin:
+                if not email_admin.strip() or not password_admin.strip():
+                    st.warning("Por favor, ingresa tanto tu correo como tu contraseña.")
+                else:
                     try:
-                        res = supabase.auth.verify_otp({
+                        # Autenticación directa en Supabase con correo y contraseña
+                        res = supabase.auth.sign_in_with_password({
                             "email": email_admin.strip(),
-                            "token": codigo_otp.strip(),
-                            "type": "email"
+                            "password": password_admin.strip()
                         })
                         if res.user:
                             st.session_state["usuario_rol"] = "admin"
-                            st.session_state["usuario_datos"] = {"nombre": "Administradora", "email": email_admin}
+                            st.session_state["usuario_datos"] = {"nombre": "Administradora", "email": email_admin.strip()}
                             st.success("¡Sesión iniciada correctamente!")
                             st.rerun()
                     except Exception as e:
-                        st.error("Código incorrecto o expirado.")
+                        st.error("Correo o contraseña incorrectos. Verifica tus credenciales en Supabase.")
 
     with tab_registro:
         st.subheader("Registro Inicial de Alumnos")
