@@ -31,27 +31,30 @@ def limpiar_texto(texto: str) -> str:
     return re.sub(r'[^a-zA-Z0-9_\-]', '_', texto_sin_acentos)
 
 def calcular_y_actualizar_horas(id_servicio: int, grupo_semestre: str):
-    """Calcula automáticamente las horas acumuladas por asistencias y tareas sin duplicar."""
+    """Calcula automáticamente las horas acumuladas por asistencias y tareas entregadas."""
     try:
+        # 1. Valor actual de cada asistencia
         res_cfg = supabase.table("configuracion_general").select("valor").eq("clave", "horas_por_asistencia").execute()
         val_asistencia = int(res_cfg.data[0]["valor"]) if res_cfg.data else 2
 
+        # 2. Conteo de asistencias
         res_asist = supabase.table("asistencias").select("id_asistencia", count="exact").eq("id_servicio", id_servicio).execute()
         cant_asistencias = res_asist.count if res_asist.count is not None else 0
         total_horas_asistencias = cant_asistencias * val_asistencia
 
-        res_inv = supabase.table("investigaciones").select("titulo_entrega").eq("id_servicio", id_servicio).execute()
+        # 3. Suma de horas por tareas entregadas
+        res_inv = supabase.table("investigaciones").select("id_entregable").eq("id_servicio", id_servicio).execute()
         
-        # Filtramos entregas únicas por título para evitar sumar doble
-        entregas_unicas = set(e["titulo_entrega"] for e in res_inv.data) if res_inv.data else set()
+        # Filtramos por id_entregable único para evitar sumar doble la misma tarea
+        entregas_unicas_ids = set(e["id_entregable"] for e in res_inv.data if e.get("id_entregable")) if res_inv.data else set()
         
         total_horas_entregables = 0
-        if entregas_unicas:
-            res_cat = supabase.table("catalogo_entregables").select("nombre_entregable, horas_valor").eq("grupo_semestre", grupo_semestre).execute()
-            mapa_horas = {item["nombre_entregable"]: item["horas_valor"] for item in res_cat.data} if res_cat.data else {}
+        if entregas_unicas_ids:
+            res_cat = supabase.table("catalogo_entregables").select("id_entregable, horas_valor").in_("id_entregable", list(entregas_unicas_ids)).execute()
+            mapa_horas = {item["id_entregable"]: item["horas_valor"] for item in res_cat.data} if res_cat.data else {}
             
-            for titulo in entregas_unicas:
-                total_horas_entregables += mapa_horas.get(titulo, 0)
+            for id_ent in entregas_unicas_ids:
+                total_horas_entregables += mapa_horas.get(id_ent, 0)
 
         total_acumulado = total_horas_asistencias + total_horas_entregables
         supabase.table("servicio_social").update({"horas_acumuladas": total_acumulado}).eq("id_servicio", id_servicio).execute()
@@ -254,6 +257,7 @@ elif st.session_state["usuario_rol"] == "estudiante":
 
                             calcular_y_actualizar_horas(id_servicio, grupo_semestre)
                             st.success("¡Asistencia y evidencia fotográfica guardadas correctamente!")
+                            st.rerun()
                 except Exception as e:
                     if "duplicate key value" in str(e) or "23505" in str(e):
                         st.warning("Ya registraste tu asistencia el día de hoy.")
@@ -272,38 +276,37 @@ elif st.session_state["usuario_rol"] == "estudiante":
                 if not res_cat.data:
                     st.info("No hay tareas asignadas para tu grupo por el momento.")
                 else:
-                    mapa_tareas = {item["nombre_entregable"]: item for item in res_cat.data}
-                    tarea_sel = st.selectbox("Selecciona la Tarea a entregar:", list(mapa_tareas.keys()))
-                    tarea_obj = mapa_tareas[tarea_sel]
+                    # Usamos una etiqueta única con ID para evitar colisión de nombres iguales
+                    mapa_tareas = {f"#{item['id_entregable']} - {item['nombre_entregable']} ({item['horas_valor']} hrs)": item for item in res_cat.data}
+                    tarea_sel_key = st.selectbox("Selecciona la Tarea a entregar:", list(mapa_tareas.keys()))
+                    tarea_obj = mapa_tareas[tarea_sel_key]
 
                     st.write(f"**Horas asignadas:** {tarea_obj['horas_valor']} hrs")
                     st.write(f"**Instrucciones:** {tarea_obj.get('descripcion', 'Sin instrucciones.')}")
                     
-                    # Verificación de Fecha Límite
+                    # Botón para ver/descargar el PDF adjunto proporcionado por la Administradora
+                    if tarea_obj.get("url_pdf_instrucciones"):
+                        st.markdown(f"📄 **Documento de la Tarea / Guía:** [Descargar / Ver PDF Guía]({tarea_obj['url_pdf_instrucciones']})")
+
+                    # Verificación de Fecha Límite con manejo seguro de timezone
                     fecha_limite_str = tarea_obj.get("fecha_limite")
                     es_a_tiempo = True
                     
                     if fecha_limite_str:
                         try:
-                            # Convertimos la fecha límite a objeto datetime
                             limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
+                            ahora_dt = datetime.datetime.now(datetime.timezone.utc) if limite_dt.tzinfo else datetime.datetime.now()
                             
-                            # Si la fecha límite tiene zona horaria, comparamos con UTC; si no, usamos la hora local
-                            if limite_dt.tzinfo is not None:
-                                ahora_dt = datetime.datetime.now(datetime.timezone.utc)
-                            else:
-                                ahora_dt = datetime.datetime.now()
-
                             st.warning(f"**Fecha límite de entrega:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
                             if ahora_dt > limite_dt:
                                 es_a_tiempo = False
-                        except Exception as e_date:
-                            st.warning(f"No se pudo calcular la fecha límite exactamente: {e_date}")
+                        except Exception as e_dt:
+                            st.warning(f"Fecha límite: {fecha_limite_str}")
 
                     if not es_a_tiempo:
                         st.error("El tiempo para entregar esta tarea ha expirado. Ya no se aceptan archivos.")
                     else:
-                        archivo_tarea = st.file_uploader("Adjuntar archivo PDF", type=["pdf"])
+                        archivo_tarea = st.file_uploader("Adjuntar archivo PDF de tu respuesta", type=["pdf"])
                         if st.button("Enviar Tarea"):
                             if archivo_tarea is None:
                                 st.error("Adjunta el archivo PDF correspondiente.")
@@ -312,7 +315,7 @@ elif st.session_state["usuario_rol"] == "estudiante":
                                 grp_limpio = limpiar_texto(grupo_actual)
                                 nom_tarea_limpia = limpiar_texto(tarea_obj['nombre_entregable'])
 
-                                ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{nom_tarea_limpia}.pdf"
+                                ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}.pdf"
                                 supabase.storage.from_("investigaciones").upload(
                                     path=ruta_tarea,
                                     file=archivo_tarea.getvalue(),
@@ -320,23 +323,23 @@ elif st.session_state["usuario_rol"] == "estudiante":
                                 )
                                 url_tarea = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
 
-                                supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("titulo_entrega", tarea_obj['nombre_entregable']).execute()
+                                # Eliminar entregas previas para este entregable e insertar la nueva
+                                supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("id_entregable", tarea_obj['id_entregable']).execute()
 
                                 supabase.table("investigaciones").insert({
                                     "id_alumno": alumno["id_alumno"],
                                     "id_servicio": id_servicio,
+                                    "id_entregable": tarea_obj['id_entregable'],
                                     "titulo_entrega": tarea_obj['nombre_entregable'],
                                     "url_pdf": url_tarea
                                 }).execute()
 
                                 calcular_y_actualizar_horas(id_servicio, grupo_actual)
                                 st.success("✅ Tarea enviada exitosamente.")
+                                st.rerun()
         except Exception as e:
             st.error(f"Error al cargar módulo de entregables: {e}")
 
-# =============================================================
-# 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
-# =============================================================
 # =============================================================
 # 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
 # =============================================================
@@ -348,21 +351,19 @@ elif st.session_state["usuario_rol"] == "admin":
 
     st.title("Control de Servicio Social")
 
-    # --- CONSULTA SEGURA DE GRUPOS ---
     grupos_list = []
     try:
         res_g_all = supabase.table("grupos").select("nombre_grupo, estado_grupo").order("nombre_grupo").execute()
         if res_g_all.data:
             grupos_list = [g["nombre_grupo"] for g in res_g_all.data]
     except Exception as e:
-        st.error(f"Nota de conexión con la tabla 'grupos': {e}")
         grupos_list = []
 
     if grupos_list:
         grupo_activo = st.selectbox("Selecciona el Grupo de Trabajo activo:", grupos_list)
     else:
         grupo_activo = None
-        st.warning("No hay grupos registrados aún. Crea tu primer grupo de trabajo en la pestaña '⚙️ Configuración y Grupos'.")
+        st.warning("⚠️ Crea un grupo de trabajo en la pestaña 'Configuración y Grupos'.")
 
     tab_a1, tab_a2, tab_a3 = st.tabs([
         "Alumnos y Expediente", 
@@ -413,7 +414,7 @@ elif st.session_state["usuario_rol"] == "admin":
                 st.markdown("---")
                 col_exp1, col_exp2 = st.columns(2)
 
-                # --- EDICIÓN Y ELIMINACIÓN ---
+                # --- EDICIÓN Y ELIMINACIÓN DE ALUMNOS ---
                 with col_exp1:
                     st.subheader("Editar o Eliminar Alumno")
                     alumno_sel_edit = st.selectbox("Selecciona Alumno para gestionar:", list(opciones_alumnos.keys()))
@@ -440,7 +441,7 @@ elif st.session_state["usuario_rol"] == "admin":
                             if st.button("Eliminar Registro Completo"):
                                 supabase.table("servicio_social").delete().eq("id_servicio", reg_edit["id_servicio"]).execute()
                                 supabase.table("alumnos").delete().eq("id_alumno", al_data_edit["id_alumno"]).execute()
-                                st.success("Registro y alumno borrados.")
+                                st.success("Registro borrado.")
                                 st.rerun()
 
                 # --- DESCARGA MASIVA ZIP EVIDENCIAS ---
@@ -542,17 +543,18 @@ elif st.session_state["usuario_rol"] == "admin":
 
             with sub_tab2:
                 st.write("### Consultar Tareas Entregadas por Estudiantes")
-                res_cat_t = supabase.table("catalogo_entregables").select("nombre_entregable").eq("grupo_semestre", grupo_activo).execute()
+                res_cat_t = supabase.table("catalogo_entregables").select("id_entregable, nombre_entregable").eq("grupo_semestre", grupo_activo).execute()
                 
                 if not res_cat_t.data:
                     st.info("No se han publicado tareas para este grupo.")
                 else:
-                    lista_tareas = [t["nombre_entregable"] for t in res_cat_t.data]
-                    tarea_filtro = st.selectbox("Selecciona la tarea a revisar:", lista_tareas)
+                    mapa_tareas_rev = {f"#{t['id_entregable']} - {t['nombre_entregable']}": t for t in res_cat_t.data}
+                    tarea_filtro_key = st.selectbox("Selecciona la tarea a revisar:", list(mapa_tareas_rev.keys()))
+                    tarea_filtro_obj = mapa_tareas_rev[tarea_filtro_key]
 
                     res_entregas = supabase.table("investigaciones").select(
                         "created_at, url_pdf, alumnos(matricula, nombre)"
-                    ).eq("titulo_entrega", tarea_filtro).execute()
+                    ).eq("id_entregable", tarea_filtro_obj["id_entregable"]).execute()
 
                     if res_entregas.data:
                         tabla_rev = []
@@ -576,14 +578,41 @@ elif st.session_state["usuario_rol"] == "admin":
                         st.warning("Ningún alumno ha subido respuesta para esta tarea aún.")
 
     # ---------------------------------------------------------
-    # TAB ADMIN 3: CONFIGURACIÓN Y TAREAS
+    # TAB ADMIN 3: CONFIGURACIÓN, VALOR DE ASISTENCIA Y EDICIÓN DE TAREAS
     # ---------------------------------------------------------
     with tab_a3:
-        st.subheader("⚙️ Gestión de Grupos y Asignación de Tareas")
+        st.subheader("⚙️ Configuración del Sistema, Horas y Tareas")
         
+        # --- SECCIÓN 1: AJUSTE DE VALOR POR ASISTENCIA ---
+        st.markdown("### ⏱️ Configurar Horas por Asistencia")
+        res_cfg = supabase.table("configuracion_general").select("valor").eq("clave", "horas_por_asistencia").execute()
+        val_actual = int(res_cfg.data[0]["valor"]) if res_cfg.data else 2
+
+        col_cfg1, col_cfg2 = st.columns([2, 1])
+        with col_cfg1:
+            nuevo_val_asistencia = st.number_input("Valor en horas asignado por cada Asistencia registrada:", min_value=1, max_value=24, value=val_actual)
+        with col_cfg2:
+            st.write("")
+            st.write("")
+            if st.button("Guardar Valor de Asistencia"):
+                supabase.table("configuracion_general").upsert({"clave": "horas_por_asistencia", "valor": str(nuevo_val_asistencia)}, on_conflict="clave").execute()
+                
+                # Recalcular horas para todos los inscritos con la nueva tasa
+                res_todos_ss = supabase.table("servicio_social").select("id_servicio, grupo_semestre").execute()
+                if res_todos_ss.data:
+                    for item_ss in res_todos_ss.data:
+                        calcular_y_actualizar_horas(item_ss["id_servicio"], item_ss["grupo_semestre"])
+                
+                st.success(f"✅ Valor actualizado: Cada asistencia otorga {nuevo_val_asistencia} hrs. (Horas acumuladas recalculadas).")
+                st.rerun()
+
+        st.markdown("---")
+
+        # --- SECCIÓN 2: CREACIÓN Y EDICIÓN COMPLETA DE TAREAS ---
         col_g1, col_g2 = st.columns(2)
+        
         with col_g1:
-            st.write("### Crear Grupo Escolar")
+            st.write("### Crear Grupo / Cerrar Semestre")
             nuevo_grp = st.text_input("Nombre del Nuevo Grupo (Ej. Semestre 2026-2)")
             if st.button("Crear Grupo"):
                 if nuevo_grp.strip():
@@ -592,9 +621,6 @@ elif st.session_state["usuario_rol"] == "admin":
                     st.rerun()
 
             st.markdown("---")
-            st.write("### Concluir Semestre Actual")
-            st.write("Cambia el estado de todos los alumnos de este grupo a **Concluido** para cerrar el periodo escolar.")
-            
             if grupo_activo and st.button("Marcar Grupo Completo como Concluido"):
                 supabase.table("servicio_social").update({"estado": "Concluido"}).eq("grupo_semestre", grupo_activo).execute()
                 supabase.table("grupos").update({"estado_grupo": "Concluido"}).eq("nombre_grupo", grupo_activo).execute()
@@ -602,34 +628,97 @@ elif st.session_state["usuario_rol"] == "admin":
                 st.rerun()
 
         with col_g2:
-            st.write("### Nueva Tarea / Entregable con Límite")
+            st.write("### Gestión y Edición de Tareas")
             if grupo_activo:
-                nom_tarea = st.text_input("Nombre de la Tarea")
-                hrs_tarea = st.number_input("Horas que Otorga", min_value=1, value=10)
-                desc_tarea = st.text_area("Instrucciones de la tarea")
-                
-                c_f, c_h = st.columns(2)
-                with c_f:
-                    f_limite = st.date_input("Fecha límite", value=datetime.date.today() + datetime.timedelta(days=7))
-                with c_h:
-                    h_limite = st.time_input("Hora límite", value=datetime.time(23, 59))
-                
-                if st.button("Asignar Tarea al Grupo"):
-                    if nom_tarea.strip():
-                        dt_combinado = datetime.datetime.combine(f_limite, h_limite)
-                        iso_limite = dt_combinado.isoformat()
-                        
-                        supabase.table("catalogo_entregables").insert({
-                            "grupo_semestre": grupo_activo,
-                            "nombre_entregable": nom_tarea.strip(),
-                            "horas_valor": int(hrs_tarea),
-                            "descripcion": desc_tarea.strip(),
-                            "fecha_limite": iso_limite,
-                            "activo": True
-                        }).execute()
-                        st.success(f"Tarea '{nom_tarea}' creada para el grupo {grupo_activo}.")
-                        st.rerun()
+                accion_tarea = st.radio("Acción de Tareas:", ["➕ Crear Nueva Tarea", "✏️ Editar Tarea Existente"], horizontal=True)
+
+                if accion_tarea == "➕ Crear Nueva Tarea":
+                    nom_tarea = st.text_input("Nombre de la Tarea")
+                    hrs_tarea = st.number_input("Horas que Otorga", min_value=1, value=10)
+                    desc_tarea = st.text_area("Instrucciones de la tarea")
+                    
+                    pdf_instruccion = st.file_uploader("Adjuntar PDF con instrucciones/guía (Opcional)", type=["pdf"])
+
+                    c_f, c_h = st.columns(2)
+                    with c_f:
+                        f_limite = st.date_input("Fecha límite", value=datetime.date.today() + datetime.timedelta(days=7))
+                    with c_h:
+                        h_limite = st.time_input("Hora límite", value=datetime.time(23, 59))
+
+                    if st.button("Asignar Tarea al Grupo"):
+                        if nom_tarea.strip():
+                            url_pdf_guia = None
+                            if pdf_instruccion is not None:
+                                nom_guia_limpio = limpiar_texto(nom_tarea)
+                                ruta_guia = f"guias_tareas/{limpiar_texto(grupo_activo)}/{nom_guia_limpio}_guia.pdf"
+                                supabase.storage.from_("investigaciones").upload(
+                                    path=ruta_guia,
+                                    file=pdf_instruccion.getvalue(),
+                                    file_options={"content-type": "application/pdf", "upsert": "true"}
+                                )
+                                url_pdf_guia = supabase.storage.from_("investigaciones").get_public_url(ruta_guia)
+
+                            dt_combinado = datetime.datetime.combine(f_limite, h_limite)
+                            iso_limite = dt_combinado.isoformat()
+
+                            supabase.table("catalogo_entregables").insert({
+                                "grupo_semestre": grupo_activo,
+                                "nombre_entregable": nom_tarea.strip(),
+                                "horas_valor": int(hrs_tarea),
+                                "descripcion": desc_tarea.strip(),
+                                "url_pdf_instrucciones": url_pdf_guia,
+                                "fecha_limite": iso_limite,
+                                "activo": True
+                            }).execute()
+                            st.success(f"Tarea '{nom_tarea}' creada correctamente.")
+                            st.rerun()
+
+                else:
+                    # --- MÓDULO DE EDICIÓN DE TAREAS EXISTENTES ---
+                    res_cat_edit = supabase.table("catalogo_entregables").select("*").eq("grupo_semestre", grupo_activo).execute()
+                    if not res_cat_edit.data:
+                        st.info("No hay tareas creadas en este grupo para editar.")
                     else:
-                        st.error("Ingresa un nombre válido para la tarea.")
+                        mapa_edit = {f"#{t['id_entregable']} - {t['nombre_entregable']}": t for t in res_cat_edit.data}
+                        tarea_edit_key = st.selectbox("Selecciona la tarea a modificar:", list(mapa_edit.keys()))
+                        tarea_edit_obj = mapa_edit[tarea_edit_key]
+
+                        with st.form("form_edit_tarea"):
+                            edit_nom = st.text_input("Nombre de la Tarea:", value=tarea_edit_obj["nombre_entregable"])
+                            edit_hrs = st.number_input("Horas que Otorga:", min_value=1, value=int(tarea_edit_obj["horas_valor"]))
+                            edit_desc = st.text_area("Instrucciones:", value=tarea_edit_obj.get("descripcion", ""))
+                            
+                            edit_pdf = st.file_uploader("Actualizar/Subir PDF con guía (Opcional)", type=["pdf"])
+
+                            btn_guardar_edit = st.form_submit_button("Guardar Cambios en la Tarea")
+
+                        if btn_guardar_edit:
+                            url_pdf_edit = tarea_edit_obj.get("url_pdf_instrucciones")
+                            if edit_pdf is not None:
+                                nom_guia_limpio = limpiar_texto(edit_nom)
+                                ruta_guia = f"guias_tareas/{limpiar_texto(grupo_activo)}/{tarea_edit_obj['id_entregable']}_{nom_guia_limpio}_guia.pdf"
+                                supabase.storage.from_("investigaciones").upload(
+                                    path=ruta_guia,
+                                    file=edit_pdf.getvalue(),
+                                    file_options={"content-type": "application/pdf", "upsert": "true"}
+                                )
+                                url_pdf_edit = supabase.storage.from_("investigaciones").get_public_url(ruta_guia)
+
+                            supabase.table("catalogo_entregables").update({
+                                "nombre_entregable": edit_nom.strip(),
+                                "horas_valor": int(edit_hrs),
+                                "descripcion": edit_desc.strip(),
+                                "url_pdf_instrucciones": url_pdf_edit
+                            }).eq("id_entregable", tarea_edit_obj["id_entregable"]).execute()
+
+                            # Recalcular horas de los alumnos del grupo por si cambió el valor en horas de la tarea
+                            res_ss_grp = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("grupo_semestre", grupo_activo).execute()
+                            if res_ss_grp.data:
+                                for item_ss in res_ss_grp.data:
+                                    calcular_y_actualizar_horas(item_ss["id_servicio"], grupo_activo)
+
+                            st.success("✅ Tarea actualizada correctamente.")
+                            st.rerun()
+
             else:
-                st.info("Selecciona o crea un grupo primero para asignar tareas.")
+                st.info("Selecciona un grupo para gestionar sus tareas.")
