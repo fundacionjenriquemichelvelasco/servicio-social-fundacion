@@ -674,24 +674,32 @@ elif st.session_state["usuario_rol"] == "admin":
                             st.rerun()
 
                 else:
-                    # --- MÓDULO DE EDICIÓN DE TAREAS EXISTENTES ---
+                    # --- MÓDULO DE EDICIÓN Y ELIMINACIÓN DE TAREAS EXISTENTES ---
                     res_cat_edit = supabase.table("catalogo_entregables").select("*").eq("grupo_semestre", grupo_activo).execute()
                     if not res_cat_edit.data:
-                        st.info("No hay tareas creadas en este grupo para editar.")
+                        st.info("No hay tareas creadas en este grupo para modificar o eliminar.")
                     else:
                         mapa_edit = {f"#{t['id_entregable']} - {t['nombre_entregable']}": t for t in res_cat_edit.data}
-                        tarea_edit_key = st.selectbox("Selecciona la tarea a modificar:", list(mapa_edit.keys()))
+                        tarea_edit_key = st.selectbox("Selecciona la tarea a gestionar:", list(mapa_edit.keys()))
                         tarea_edit_obj = mapa_edit[tarea_edit_key]
 
+                        st.markdown("---")
+                        
                         with st.form("form_edit_tarea"):
+                            st.write(f"**Modificar Tarea #{tarea_edit_obj['id_entregable']}**")
                             edit_nom = st.text_input("Nombre de la Tarea:", value=tarea_edit_obj["nombre_entregable"])
                             edit_hrs = st.number_input("Horas que Otorga:", min_value=1, value=int(tarea_edit_obj["horas_valor"]))
                             edit_desc = st.text_area("Instrucciones:", value=tarea_edit_obj.get("descripcion", ""))
                             
                             edit_pdf = st.file_uploader("Actualizar/Subir PDF con guía (Opcional)", type=["pdf"])
 
-                            btn_guardar_edit = st.form_submit_button("Guardar Cambios en la Tarea")
+                            col_t_btn1, col_t_btn2 = st.columns(2)
+                            with col_t_btn1:
+                                btn_guardar_edit = st.form_submit_button("💾 Guardar Cambios")
+                            with col_t_btn2:
+                                btn_eliminar_tarea = st.form_submit_button("🗑️ Eliminar Tarea")
 
+                        # --- LÓGICA GUARDAR CAMBIOS ---
                         if btn_guardar_edit:
                             url_pdf_edit = tarea_edit_obj.get("url_pdf_instrucciones")
                             if edit_pdf is not None:
@@ -711,13 +719,32 @@ elif st.session_state["usuario_rol"] == "admin":
                                 "url_pdf_instrucciones": url_pdf_edit
                             }).eq("id_entregable", tarea_edit_obj["id_entregable"]).execute()
 
-                            # Recalcular horas de los alumnos del grupo por si cambió el valor en horas de la tarea
+                            # Recalcular horas por si cambiaron las horas que otorgaba la tarea
                             res_ss_grp = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("grupo_semestre", grupo_activo).execute()
                             if res_ss_grp.data:
                                 for item_ss in res_ss_grp.data:
                                     calcular_y_actualizar_horas(item_ss["id_servicio"], grupo_activo)
 
                             st.success("✅ Tarea actualizada correctamente.")
+                            st.rerun()
+
+                        # --- LÓGICA ELIMINAR TAREA ---
+                        if btn_eliminar_tarea:
+                            id_ent_borrar = tarea_edit_obj["id_entregable"]
+                            
+                            # 1. Eliminar entregas de los estudiantes vinculadas a esta tarea
+                            supabase.table("investigaciones").delete().eq("id_entregable", id_ent_borrar).execute()
+                            
+                            # 2. Eliminar la tarea del catálogo
+                            supabase.table("catalogo_entregables").delete().eq("id_entregable", id_ent_borrar).execute()
+
+                            # 3. Recalcular horas de todos los alumnos del grupo
+                            res_ss_grp = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("grupo_semestre", grupo_activo).execute()
+                            if res_ss_grp.data:
+                                for item_ss in res_ss_grp.data:
+                                    calcular_y_actualizar_horas(item_ss["id_servicio"], grupo_activo)
+
+                            st.success(f"🗑️ La tarea '{tarea_edit_obj['nombre_entregable']}' ha sido eliminada y las horas fueron recalculadas.")
                             st.rerun()
 
             else:
