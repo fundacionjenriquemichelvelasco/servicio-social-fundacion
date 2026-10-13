@@ -366,32 +366,41 @@ elif st.session_state["usuario_rol"] == "estudiante":
                     if tarea_obj.get("url_pdf_instrucciones"):
                         st.markdown(f"📄 **Guía de la tarea:** [Descargar PDF Guía]({tarea_obj['url_pdf_instrucciones']})")
 
-                    # Cálculo dinámico de penalización por entrega tardía
+                   # Cálculo dinámico de penalización por entrega tardía
                     horas_base = int(tarea_obj['horas_valor'])
                     horas_a_otorgar = horas_base
                     fecha_limite_str = tarea_obj.get("fecha_limite")
                     
                     st.markdown("---")
                     if fecha_limite_str:
-                        limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
-                        ahora_dt = datetime.datetime.now(datetime.timezone.utc)
-                        st.write(f"📅 **Fecha límite oficial:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
+                        try:
+                            # 1. Convertir la fecha límite asegurando formato con zona horaria UTC
+                            limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
+                            if limite_dt.tzinfo is None:
+                                limite_dt = limite_dt.replace(tzinfo=datetime.timezone.utc)
+                            
+                            # 2. Obtener hora actual con zona horaria UTC activa
+                            ahora_dt = datetime.datetime.now(datetime.timezone.utc)
+                            
+                            st.write(f"📅 **Fecha límite oficial:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
 
-                        if ahora_dt > limite_dt:
-                            retraso_segundos = (ahora_dt - limite_dt).total_seconds()
-                            dias_atraso = retraso_segundos / 86400.0
+                            if ahora_dt > limite_dt:
+                                retraso_segundos = (ahora_dt - limite_dt).total_seconds()
+                                dias_atraso = retraso_segundos / 86400.0
 
-                            if dias_atraso <= 1.0: # Hasta 1 día de retraso
-                                horas_a_otorgar = max(0, horas_base - 2)
-                                st.warning(f"⚠️ **Entrega con retraso (Menos de 24 hrs):** Se aplican -2 horas de penalización. Esta entrega valdrá **{horas_a_otorgar} hrs**.")
-                            elif dias_atraso <= 2.0: # Hasta 2 días de retraso
-                                horas_a_otorgar = int(horas_base * 0.5)
-                                st.warning(f"⚠️ **Entrega con 2 días de retraso:** Vale la mitad de los puntos. Esta entrega valdrá **{horas_a_otorgar} hrs**.")
-                            else: # Más de 2 días
-                                horas_a_otorgar = 0
-                                st.error("❌ **Entrega con más de 2 días de retraso:** Puedes subir tu tarea para revisión de evidencia, pero otorgará **0 horas**.")
-                        else:
-                            st.info(f"✅ **Entrega a tiempo:** Esta tarea otorgará **{horas_a_otorgar} hrs** completas.")
+                                if dias_atraso <= 1.0: # Hasta 1 día de retraso (24 hrs)
+                                    horas_a_otorgar = max(0, horas_base - 2)
+                                    st.warning(f"⚠️ **Entrega con retraso (Menos de 24 hrs):** Se aplican -2 horas de penalización. Esta entrega valdrá **{horas_a_otorgar} hrs**.")
+                                elif dias_atraso <= 2.0: # Hasta 2 días de retraso (48 hrs)
+                                    horas_a_otorgar = int(horas_base * 0.5)
+                                    st.warning(f"⚠️ **Entrega con 2 días de retraso:** Vale la mitad de los puntos. Esta entrega valdrá **{horas_a_otorgar} hrs**.")
+                                else: # Más de 2 días (>48 hrs)
+                                    horas_a_otorgar = 0
+                                    st.error("❌ **Entrega con más de 2 días de retraso:** Puedes subir tu tarea para revisión de evidencia, pero otorgará **0 horas**.")
+                            else:
+                                st.info(f"✅ **Entrega a tiempo:** Esta tarea otorgará **{horas_a_otorgar} hrs** completas.")
+                        except Exception as e_dt:
+                            st.warning(f"Fecha límite registrada: {fecha_limite_str}")
 
                     archivo_tarea = st.file_uploader("Adjuntar archivo PDF de tu respuesta", type=["pdf"])
                     if st.button("Enviar Tarea"):
