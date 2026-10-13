@@ -231,15 +231,27 @@ elif st.session_state["usuario_rol"] == "estudiante":
 
             # Verificar si tiene un Check-in pendiente activo
             res_activa = supabase.table("asistencias").select("*").eq("id_alumno", alumno["id_alumno"]).eq("estado", "ACTIVA").execute()
-            asistencia_pendiente = res_activa.data[0] if res_activa.data else None
+            asistencia_pendiente = None
+            
+            if res_activa.data:
+                # Filtramos únicamente registros que tengan una fecha válida de Check-in
+                for item_asist in res_activa.data:
+                    if item_asist.get("check_in_at"):
+                        asistencia_pendiente = item_asist
+                        break
 
             # Auto-cancelación si pasaron más de 8 horas desde la entrada
-            if asistencia_pendiente:
-                check_in_dt = datetime.datetime.fromisoformat(asistencia_pendiente["check_in_at"].replace("Z", "+00:00"))
-                ahora_utc = datetime.datetime.now(datetime.timezone.utc)
-                if (ahora_utc - check_in_dt).total_seconds() > 28800: # 8 horas
-                    supabase.table("asistencias").update({"estado": "CANCELADA_EXCESO_TIEMPO", "horas_otorgadas": 0}).eq("id_asistencia", asistencia_pendiente["id_asistencia"]).execute()
-                    st.warning("⚠️ Tu sesión de Check-in anterior sobrepasó las 8 horas sin marcar salida y fue cancelada. Inicia una nueva sesión.")
+            if asistencia_pendiente and asistencia_pendiente.get("check_in_at"):
+                try:
+                    str_checkin = str(asistencia_pendiente["check_in_at"]).replace("Z", "+00:00")
+                    check_in_dt = datetime.datetime.fromisoformat(str_checkin)
+                    ahora_utc = datetime.datetime.now(datetime.timezone.utc)
+                    
+                    if (ahora_utc - check_in_dt).total_seconds() > 28800: # 8 horas
+                        supabase.table("asistencias").update({"estado": "CANCELADA_EXCESO_TIEMPO", "horas_otorgadas": 0}).eq("id_asistencia", asistencia_pendiente["id_asistencia"]).execute()
+                        st.warning("⚠️ Tu sesión de Check-in anterior sobrepasó las 8 horas sin marcar salida y fue cancelada. Inicia una nueva sesión.")
+                        asistencia_pendiente = None
+                except Exception as e_dt:
                     asistencia_pendiente = None
 
             if not asistencia_pendiente:
