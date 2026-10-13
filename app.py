@@ -30,33 +30,49 @@ def limpiar_texto(texto: str) -> str:
     texto_sin_acentos = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
     return re.sub(r'[^a-zA-Z0-9_\-]', '_', texto_sin_acentos)
 
+def calcular_horas_presenciales(check_in_dt, check_out_dt):
+    """
+    Calcula horas presenciales con redondeo por minutos y multiplicador x2.
+    - Minutos 0-19: Redondea hacia abajo.
+    - Minutos 20-39: Horas exactas acumuladas.
+    - Minutos 40-59: Redondea hacia arriba.
+    - Si pasan más de 8 horas sin check-out: Cancela (devuelve 0).
+    """
+    diferencia = check_out_dt - check_in_dt
+    total_segundos = diferencia.total_seconds()
+    
+    # Regla: Si pasaron más de 8 horas (28,800 segundos), se cancela la asistencia
+    if total_segundos > 28800 or total_segundos < 0:
+        return 0, True  # (0 horas, cancelado=True)
+
+    horas_enteras = int(total_segundos // 3600)
+    minutos_restantes = int((total_segundos % 3600) // 60)
+
+    if minutos_restantes < 20:
+        horas_redondeadas = horas_enteras
+    elif minutos_restantes >= 40:
+        horas_redondeadas = horas_enteras + 1
+    else:
+        horas_redondeadas = horas_enteras
+
+    # Multiplicador x2
+    horas_finales = horas_redondeadas * 2
+    return horas_finales, False
+
 def calcular_y_actualizar_horas(id_servicio: int, grupo_semestre: str):
-    """Calcula automáticamente las horas acumuladas por asistencias y tareas entregadas."""
+    """Suma las horas presenciales de asistencias cerradas + horas de tareas calculadas."""
     try:
-        # 1. Valor actual de cada asistencia
-        res_cfg = supabase.table("configuracion_general").select("valor").eq("clave", "horas_por_asistencia").execute()
-        val_asistencia = int(res_cfg.data[0]["valor"]) if res_cfg.data else 2
+        # 1. Sumar horas de asistencias válidas
+        res_asist = supabase.table("asistencias").select("horas_otorgadas, estado").eq("id_servicio", id_servicio).eq("estado", "COMPLETADA").execute()
+        total_asistencias = sum(a.get("horas_otorgadas", 0) for a in res_asist.data) if res_asist.data else 0
 
-        # 2. Conteo de asistencias
-        res_asist = supabase.table("asistencias").select("id_asistencia", count="exact").eq("id_servicio", id_servicio).execute()
-        cant_asistencias = res_asist.count if res_asist.count is not None else 0
-        total_horas_asistencias = cant_asistencias * val_asistencia
+        # 2. Sumar horas de tareas
+        res_inv = supabase.table("investigaciones").select("id_entregable, horas_ganadas").eq("id_servicio", id_servicio).execute()
+        total_tareas = sum(i.get("horas_ganadas", 0) for i in res_inv.data) if res_inv.data else 0
 
-        # 3. Suma de horas por tareas entregadas
-        res_inv = supabase.table("investigaciones").select("id_entregable").eq("id_servicio", id_servicio).execute()
-        
-        # Filtramos por id_entregable único para evitar sumar doble la misma tarea
-        entregas_unicas_ids = set(e["id_entregable"] for e in res_inv.data if e.get("id_entregable")) if res_inv.data else set()
-        
-        total_horas_entregables = 0
-        if entregas_unicas_ids:
-            res_cat = supabase.table("catalogo_entregables").select("id_entregable, horas_valor").in_("id_entregable", list(entregas_unicas_ids)).execute()
-            mapa_horas = {item["id_entregable"]: item["horas_valor"] for item in res_cat.data} if res_cat.data else {}
-            
-            for id_ent in entregas_unicas_ids:
-                total_horas_entregables += mapa_horas.get(id_ent, 0)
+        total_acumulado = total_asistencias + total_tareas
 
-        total_acumulado = total_horas_asistencias + total_horas_entregables
+        # Respetar si la administradora hizo un ajuste manual previo
         supabase.table("servicio_social").update({"horas_acumuladas": total_acumulado}).eq("id_servicio", id_servicio).execute()
 
     except Exception as e:
@@ -73,7 +89,7 @@ if "usuario_datos" not in st.session_state:
     st.session_state["usuario_datos"] = None
 
 # =============================================================
-# 2. PANTALLA ÚNICA DE AUTENTICACIÓN / REGISTRO
+# 2. LOGIN Y REGISTRO
 # =============================================================
 if st.session_state["usuario_rol"] is None:
     st.title("🎓 Servicio Social - Portal de Acceso")
@@ -96,11 +112,10 @@ if st.session_state["usuario_rol"] is None:
                         st.success(f"Bienvenido/a {res_al.data[0]['nombre']}")
                         st.rerun()
                     else:
-                        st.error("Matrícula no encontrada. Si eres nuevo estudiante, regístrate en la pestaña de al lado.")
+                        st.error("Matrícula no encontrada.")
 
         else:
             st.info("Ingresa tus credenciales administrativas para iniciar sesión.")
-            
             with st.form("admin_login_form"):
                 email_admin = st.text_input("Correo electrónico de la Administradora")
                 password_admin = st.text_input("Contraseña", type="password")
@@ -108,7 +123,7 @@ if st.session_state["usuario_rol"] is None:
 
             if submit_admin:
                 if not email_admin.strip() or not password_admin.strip():
-                    st.warning("Por favor, ingresa tanto tu correo como tu contraseña.")
+                    st.warning("Por favor, ingresa correo y contraseña.")
                 else:
                     try:
                         res = supabase.auth.sign_in_with_password({
@@ -120,12 +135,11 @@ if st.session_state["usuario_rol"] is None:
                             st.session_state["usuario_datos"] = {"nombre": "Administradora", "email": email_admin.strip()}
                             st.success("¡Sesión iniciada correctamente!")
                             st.rerun()
-                    except Exception as e:
-                        st.error("Correo o contraseña incorrectos. Verifica tus credenciales en Supabase.")
+                    except Exception:
+                        st.error("Credenciales incorrectas.")
 
     with tab_registro:
         st.subheader("Registro Inicial de Alumnos")
-        
         grupos_lista = []
         try:
             res_grp = supabase.table("grupos").select("nombre_grupo").eq("estado_grupo", "En Proceso").order("nombre_grupo").execute()
@@ -158,16 +172,13 @@ if st.session_state["usuario_rol"] is None:
                     try:
                         mat_limpia = limpiar_texto(matricula.strip())
                         grp_limpio = limpiar_texto(grupo_auto)
-                        
                         ruta_foda = f"expedientes/{grp_limpio}/{mat_limpia}/foda/{mat_limpia}_foda.pdf"
-                        bytes_archivo = archivo_foda.getvalue()
-
+                        
                         supabase.storage.from_("fodas").upload(
                             path=ruta_foda,
-                            file=bytes_archivo,
+                            file=archivo_foda.getvalue(),
                             file_options={"content-type": "application/pdf", "upsert": "true"}
                         )
-
                         url_foda = supabase.storage.from_("fodas").get_public_url(ruta_foda)
 
                         res_alumno = supabase.table("alumnos").upsert({
@@ -190,7 +201,7 @@ if st.session_state["usuario_rol"] is None:
                             "estado": "En Proceso"
                         }).execute()
 
-                        st.success("✅ Registro completado exitosamente. Ahora puedes iniciar sesión con tu matrícula.")
+                        st.success("✅ Registro completado exitosamente.")
                     except Exception as e:
                         st.error(f"Error durante el registro: {e}")
 
@@ -206,63 +217,122 @@ elif st.session_state["usuario_rol"] == "estudiante":
         st.rerun()
 
     st.title("🎓 Portal del Estudiante")
-    
-    tab_e1, tab_e2 = st.tabs(["Registrar Asistencia con Foto", "Entregar Tareas / Investigaciones"])
+    tab_e1, tab_e2 = st.tabs(["Registro de Asistencia (Check-in / Out)", "Entregar Tareas / Investigaciones"])
 
     with tab_e1:
-        st.subheader("Asistencia Diaria")
-        
-        with st.form("form_asist_estudiante", clear_on_submit=True):
-            codigo_ingresado = st.text_input("Código de Asistencia del día (Proporcionado por la administración)")
-            foto_evidencia = st.camera_input("Toma una foto/selfie en las instalaciones como evidencia")
-            btn_asist = st.form_submit_button("Registrar Asistencia")
+        st.subheader("Asistencia Presencial (Multiplicador x2 por tiempo)")
 
-        if btn_asist:
-            if not codigo_ingresado or foto_evidencia is None:
-                st.error("Debes ingresar el código del día y tomar una foto de evidencia.")
-            else:
-                try:
-                    res_ss = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("id_alumno", alumno["id_alumno"]).order("id_servicio", desc=True).execute()
-                    if not res_ss.data:
-                        st.error("No estás inscrito en ningún grupo activo.")
+        res_ss = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("id_alumno", alumno["id_alumno"]).order("id_servicio", desc=True).execute()
+        if not res_ss.data:
+            st.error("No estás inscrito en ningún grupo activo.")
+        else:
+            id_servicio = res_ss.data[0]["id_servicio"]
+            grupo_semestre = res_ss.data[0]["grupo_semestre"]
+
+            # Verificar si tiene un Check-in pendiente activo
+            res_activa = supabase.table("asistencias").select("*").eq("id_alumno", alumno["id_alumno"]).eq("estado", "ACTIVA").execute()
+            asistencia_pendiente = res_activa.data[0] if res_activa.data else None
+
+            # Auto-cancelación si pasaron más de 8 horas desde la entrada
+            if asistencia_pendiente:
+                check_in_dt = datetime.datetime.fromisoformat(asistencia_pendiente["check_in_at"].replace("Z", "+00:00"))
+                ahora_utc = datetime.datetime.now(datetime.timezone.utc)
+                if (ahora_utc - check_in_dt).total_seconds() > 28800: # 8 horas
+                    supabase.table("asistencias").update({"estado": "CANCELADA_EXCESO_TIEMPO", "horas_otorgadas": 0}).eq("id_asistencia", asistencia_pendiente["id_asistencia"]).execute()
+                    st.warning("⚠️ Tu sesión de Check-in anterior sobrepasó las 8 horas sin marcar salida y fue cancelada. Inicia una nueva sesión.")
+                    asistencia_pendiente = None
+
+            if not asistencia_pendiente:
+                st.info("📌 **Paso 1: Check-in (Entrada)**. Pide el código de 10 minutos a la administradora para iniciar tu jornada.")
+                with st.form("form_checkin", clear_on_submit=True):
+                    codigo_in = st.text_input("Código de Asistencia (Válido por 10 min)")
+                    foto_in = st.camera_input("Foto de Check-in")
+                    btn_in = st.form_submit_button("Registrar ENTRADA")
+
+                if btn_in:
+                    if not codigo_in or foto_in is None:
+                        st.error("Ingresa el código y toma la foto de entrada.")
                     else:
-                        id_servicio = res_ss.data[0]["id_servicio"]
-                        grupo_semestre = res_ss.data[0]["grupo_semestre"]
-                        hoy_str = str(datetime.date.today())
+                        ahora_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                        res_cod = supabase.table("codigos_asistencia").select("*").eq("codigo", codigo_in.strip()).gte("expira_at", ahora_iso).execute()
 
-                        res_cod = supabase.table("codigos_asistencia").select("codigo").eq("fecha", hoy_str).execute()
-                        if not res_cod.data or res_cod.data[0]["codigo"] != codigo_ingresado.strip():
-                            st.error("El código del día es incorrecto o no ha sido generado.")
+                        if not res_cod.data:
+                            st.error("El código es incorrecto o ya ha expirado (duración: 10 min). Solicita uno nuevo.")
                         else:
                             mat_limpia = limpiar_texto(alumno["matricula"])
                             grp_limpio = limpiar_texto(grupo_semestre)
-                            
-                            nombre_foto = f"{hoy_str}_{mat_limpia}_asistencia.jpg"
-                            ruta_foto = f"expedientes/{grp_limpio}/{mat_limpia}/asistencias/{nombre_foto}"
-                            bytes_foto = foto_evidencia.getvalue()
+                            str_fecha = datetime.date.today().strftime("%Y%m%d_%H%M%S")
 
+                            ruta_in = f"expedientes/{grp_limpio}/{mat_limpia}/asistencias/{str_fecha}_checkin.jpg"
                             supabase.storage.from_("investigaciones").upload(
-                                path=ruta_foto,
-                                file=bytes_foto,
+                                path=ruta_in,
+                                file=foto_in.getvalue(),
                                 file_options={"content-type": "image/jpeg", "upsert": "true"}
                             )
-                            url_foto = supabase.storage.from_("investigaciones").get_public_url(ruta_foto)
+                            url_in = supabase.storage.from_("investigaciones").get_public_url(ruta_in)
 
                             supabase.table("asistencias").insert({
                                 "id_alumno": alumno["id_alumno"],
                                 "id_servicio": id_servicio,
-                                "fecha": hoy_str,
-                                "url_foto": url_foto
+                                "fecha": str(datetime.date.today()),
+                                "url_foto": url_in,
+                                "check_in_at": ahora_iso,
+                                "estado": "ACTIVA"
                             }).execute()
 
-                            calcular_y_actualizar_horas(id_servicio, grupo_semestre)
-                            st.success("¡Asistencia y evidencia fotográfica guardadas correctamente!")
+                            st.success("🟢 Check-in registrado correctamente. Trabaja tus horas y al terminar registra tu Check-out.")
                             st.rerun()
-                except Exception as e:
-                    if "duplicate key value" in str(e) or "23505" in str(e):
-                        st.warning("Ya registraste tu asistencia el día de hoy.")
+
+            else:
+                check_in_hora = datetime.datetime.fromisoformat(asistencia_pendiente["check_in_at"].replace("Z", "+00:00")).strftime("%H:%M hrs")
+                st.success(f"🟢 **Check-in activo registrado a las {check_in_hora}**. Al terminar tus labores, pide el código vigente de 10 min para marcar tu salida.")
+                
+                with st.form("form_checkout", clear_on_submit=True):
+                    codigo_out = st.text_input("Código de Salida (Válido por 10 min)")
+                    foto_out = st.camera_input("Foto de Check-out (Salida)")
+                    btn_out = st.form_submit_button("Registrar SALIDA")
+
+                if btn_out:
+                    if not codigo_out or foto_out is None:
+                        st.error("Ingresa el código vigente y toma la foto de salida.")
                     else:
-                        st.error(f"Error al registrar asistencia: {e}")
+                        ahora_utc = datetime.datetime.now(datetime.timezone.utc)
+                        ahora_iso = ahora_utc.isoformat()
+                        res_cod = supabase.table("codigos_asistencia").select("*").eq("codigo", codigo_out.strip()).gte("expira_at", ahora_iso).execute()
+
+                        if not res_cod.data:
+                            st.error("El código es incorrecto o ha expirado. Pide un nuevo código a la administradora.")
+                        else:
+                            mat_limpia = limpiar_texto(alumno["matricula"])
+                            grp_limpio = limpiar_texto(grupo_semestre)
+                            str_fecha = datetime.date.today().strftime("%Y%m%d_%H%M%S")
+
+                            ruta_out = f"expedientes/{grp_limpio}/{mat_limpia}/asistencias/{str_fecha}_checkout.jpg"
+                            supabase.storage.from_("investigaciones").upload(
+                                path=ruta_out,
+                                file=foto_out.getvalue(),
+                                file_options={"content-type": "image/jpeg", "upsert": "true"}
+                            )
+                            url_out = supabase.storage.from_("investigaciones").get_public_url(ruta_out)
+
+                            check_in_dt = datetime.datetime.fromisoformat(asistencia_pendiente["check_in_at"].replace("Z", "+00:00"))
+                            horas_ganadas, cancelado = calcular_horas_presenciales(check_in_dt, ahora_utc)
+
+                            if cancelado:
+                                supabase.table("asistencias").update({"estado": "CANCELADA_EXCESO_TIEMPO", "horas_otorgadas": 0}).eq("id_asistencia", asistencia_pendiente["id_asistencia"]).execute()
+                                st.error("❌ Pasaron más de 8 horas desde la entrada. La jornada fue cancelada automáticamente.")
+                            else:
+                                supabase.table("asistencias").update({
+                                    "foto_salida": url_out,
+                                    "check_out_at": ahora_iso,
+                                    "horas_otorgadas": horas_ganadas,
+                                    "estado": "COMPLETADA"
+                                }).eq("id_asistencia", asistencia_pendiente["id_asistencia"]).execute()
+
+                                calcular_y_actualizar_horas(id_servicio, grupo_semestre)
+                                st.balloons()
+                                st.success(f"🎉 ¡Check-out registrado! Se te han asignado **{horas_ganadas} horas** a tu expediente (multiplicador x2 aplicado).")
+                            st.rerun()
 
     with tab_e2:
         st.subheader("Entregables e Investigaciones")
@@ -274,69 +344,74 @@ elif st.session_state["usuario_rol"] == "estudiante":
 
                 res_cat = supabase.table("catalogo_entregables").select("*").eq("grupo_semestre", grupo_actual).eq("activo", True).execute()
                 if not res_cat.data:
-                    st.info("No hay tareas asignadas para tu grupo por el momento.")
+                    st.info("No hay tareas asignadas para tu grupo.")
                 else:
-                    # Usamos una etiqueta única con ID para evitar colisión de nombres iguales
-                    mapa_tareas = {f"#{item['id_entregable']} - {item['nombre_entregable']} ({item['horas_valor']} hrs)": item for item in res_cat.data}
+                    mapa_tareas = {f"#{item['id_entregable']} - {item['nombre_entregable']} ({item['horas_valor']} hrs base)": item for item in res_cat.data}
                     tarea_sel_key = st.selectbox("Selecciona la Tarea a entregar:", list(mapa_tareas.keys()))
                     tarea_obj = mapa_tareas[tarea_sel_key]
 
-                    st.write(f"**Horas asignadas:** {tarea_obj['horas_valor']} hrs")
                     st.write(f"**Instrucciones:** {tarea_obj.get('descripcion', 'Sin instrucciones.')}")
-                    
-                    # Botón para ver/descargar el PDF adjunto proporcionado por la Administradora
                     if tarea_obj.get("url_pdf_instrucciones"):
-                        st.markdown(f"📄 **Documento de la Tarea / Guía:** [Descargar / Ver PDF Guía]({tarea_obj['url_pdf_instrucciones']})")
+                        st.markdown(f"📄 **Guía de la tarea:** [Descargar PDF Guía]({tarea_obj['url_pdf_instrucciones']})")
 
-                    # Verificación de Fecha Límite con manejo seguro de timezone
+                    # Cálculo dinámico de penalización por entrega tardía
+                    horas_base = int(tarea_obj['horas_valor'])
+                    horas_a_otorgar = horas_base
                     fecha_limite_str = tarea_obj.get("fecha_limite")
-                    es_a_tiempo = True
                     
+                    st.markdown("---")
                     if fecha_limite_str:
-                        try:
-                            limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
-                            ahora_dt = datetime.datetime.now(datetime.timezone.utc) if limite_dt.tzinfo else datetime.datetime.now()
-                            
-                            st.warning(f"**Fecha límite de entrega:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
-                            if ahora_dt > limite_dt:
-                                es_a_tiempo = False
-                        except Exception as e_dt:
-                            st.warning(f"Fecha límite: {fecha_limite_str}")
+                        limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
+                        ahora_dt = datetime.datetime.now(datetime.timezone.utc)
+                        st.write(f"📅 **Fecha límite oficial:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
 
-                    if not es_a_tiempo:
-                        st.error("El tiempo para entregar esta tarea ha expirado. Ya no se aceptan archivos.")
-                    else:
-                        archivo_tarea = st.file_uploader("Adjuntar archivo PDF de tu respuesta", type=["pdf"])
-                        if st.button("Enviar Tarea"):
-                            if archivo_tarea is None:
-                                st.error("Adjunta el archivo PDF correspondiente.")
-                            else:
-                                mat_limpia = limpiar_texto(alumno["matricula"])
-                                grp_limpio = limpiar_texto(grupo_actual)
-                                nom_tarea_limpia = limpiar_texto(tarea_obj['nombre_entregable'])
+                        if ahora_dt > limite_dt:
+                            retraso_segundos = (ahora_dt - limite_dt).total_seconds()
+                            dias_atraso = retraso_segundos / 86400.0
 
-                                ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}.pdf"
-                                supabase.storage.from_("investigaciones").upload(
-                                    path=ruta_tarea,
-                                    file=archivo_tarea.getvalue(),
-                                    file_options={"content-type": "application/pdf", "upsert": "true"}
-                                )
-                                url_tarea = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
+                            if dias_atraso <= 1.0: # Hasta 1 día de retraso
+                                horas_a_otorgar = max(0, horas_base - 2)
+                                st.warning(f"⚠️ **Entrega con retraso (Menos de 24 hrs):** Se aplican -2 horas de penalización. Esta entrega valdrá **{horas_a_otorgar} hrs**.")
+                            elif dias_atraso <= 2.0: # Hasta 2 días de retraso
+                                horas_a_otorgar = int(horas_base * 0.5)
+                                st.warning(f"⚠️ **Entrega con 2 días de retraso:** Vale la mitad de los puntos. Esta entrega valdrá **{horas_a_otorgar} hrs**.")
+                            else: # Más de 2 días
+                                horas_a_otorgar = 0
+                                st.error("❌ **Entrega con más de 2 días de retraso:** Puedes subir tu tarea para revisión de evidencia, pero otorgará **0 horas**.")
+                        else:
+                            st.info(f"✅ **Entrega a tiempo:** Esta tarea otorgará **{horas_a_otorgar} hrs** completas.")
 
-                                # Eliminar entregas previas para este entregable e insertar la nueva
-                                supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("id_entregable", tarea_obj['id_entregable']).execute()
+                    archivo_tarea = st.file_uploader("Adjuntar archivo PDF de tu respuesta", type=["pdf"])
+                    if st.button("Enviar Tarea"):
+                        if archivo_tarea is None:
+                            st.error("Adjunta el archivo PDF.")
+                        else:
+                            mat_limpia = limpiar_texto(alumno["matricula"])
+                            grp_limpio = limpiar_texto(grupo_actual)
+                            nom_tarea_limpia = limpiar_texto(tarea_obj['nombre_entregable'])
 
-                                supabase.table("investigaciones").insert({
-                                    "id_alumno": alumno["id_alumno"],
-                                    "id_servicio": id_servicio,
-                                    "id_entregable": tarea_obj['id_entregable'],
-                                    "titulo_entrega": tarea_obj['nombre_entregable'],
-                                    "url_pdf": url_tarea
-                                }).execute()
+                            ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}.pdf"
+                            supabase.storage.from_("investigaciones").upload(
+                                path=ruta_tarea,
+                                file=archivo_tarea.getvalue(),
+                                file_options={"content-type": "application/pdf", "upsert": "true"}
+                            )
+                            url_tarea = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
 
-                                calcular_y_actualizar_horas(id_servicio, grupo_actual)
-                                st.success("✅ Tarea enviada exitosamente.")
-                                st.rerun()
+                            supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("id_entregable", tarea_obj['id_entregable']).execute()
+
+                            supabase.table("investigaciones").insert({
+                                "id_alumno": alumno["id_alumno"],
+                                "id_servicio": id_servicio,
+                                "id_entregable": tarea_obj['id_entregable'],
+                                "titulo_entrega": tarea_obj['nombre_entregable'],
+                                "url_pdf": url_tarea,
+                                "horas_ganadas": horas_a_otorgar
+                            }).execute()
+
+                            calcular_y_actualizar_horas(id_servicio, grupo_actual)
+                            st.success(f"✅ Tarea enviada exitosamente. Se asignaron {horas_a_otorgar} hrs a tu expediente.")
+                            st.rerun()
         except Exception as e:
             st.error(f"Error al cargar módulo de entregables: {e}")
 
@@ -353,10 +428,10 @@ elif st.session_state["usuario_rol"] == "admin":
 
     grupos_list = []
     try:
-        res_g_all = supabase.table("grupos").select("nombre_grupo, estado_grupo").order("nombre_grupo").execute()
+        res_g_all = supabase.table("grupos").select("nombre_grupo").order("nombre_grupo").execute()
         if res_g_all.data:
             grupos_list = [g["nombre_grupo"] for g in res_g_all.data]
-    except Exception as e:
+    except Exception:
         grupos_list = []
 
     if grupos_list:
@@ -368,11 +443,11 @@ elif st.session_state["usuario_rol"] == "admin":
     tab_a1, tab_a2, tab_a3 = st.tabs([
         "Alumnos y Expediente", 
         "Asistencias y Revisiones de Tareas", 
-        "⚙️ Configuración y Grupos"
+        "⚙️ Generar Código y Configuración"
     ])
 
     # ---------------------------------------------------------
-    # TAB ADMIN 1: ALUMNOS, EDICIÓN Y DESCARGA ZIP
+    # TAB ADMIN 1: ALUMNOS, MODIFICACIÓN MANUAL DE HORAS Y ZIP
     # ---------------------------------------------------------
     with tab_a1:
         if grupo_activo:
@@ -389,7 +464,6 @@ elif st.session_state["usuario_rol"] == "admin":
                     al = d.get("alumnos", {}) or {}
                     mat_al = al.get("matricula", "")
                     nombre_al = al.get("nombre", "")
-                    
                     label = f"{mat_al} - {nombre_al}"
                     opciones_alumnos[label] = d
 
@@ -405,52 +479,59 @@ elif st.session_state["usuario_rol"] == "admin":
 
                 st.dataframe(
                     tabla_alumnos,
-                    column_config={
-                        "FODA": st.column_config.LinkColumn("FODA PDF", display_text="📄 Ver PDF")
-                    },
+                    column_config={"FODA": st.column_config.LinkColumn("FODA PDF", display_text="📄 Ver PDF")},
                     use_container_width=True
                 )
 
                 st.markdown("---")
                 col_exp1, col_exp2 = st.columns(2)
 
-                # --- EDICIÓN Y ELIMINACIÓN DE ALUMNOS ---
+                # --- EDICIÓN Y AJUSTE MANUAL DE HORAS DEL ESTUDIANTE ---
                 with col_exp1:
-                    st.subheader("Editar o Eliminar Alumno")
-                    alumno_sel_edit = st.selectbox("Selecciona Alumno para gestionar:", list(opciones_alumnos.keys()))
+                    st.subheader("Editar Datos u Horas del Estudiante")
+                    alumno_sel_edit = st.selectbox("Selecciona Alumno:", list(opciones_alumnos.keys()))
                     reg_edit = opciones_alumnos[alumno_sel_edit]
                     al_data_edit = reg_edit.get("alumnos", {}) or {}
 
-                    with st.expander("Formulario de Edición"):
+                    with st.expander("Formulario de Edición y Ajuste de Horas"):
                         new_nom = st.text_input("Nombre Completo:", value=al_data_edit.get("nombre", ""))
                         new_mat = st.text_input("Matrícula:", value=al_data_edit.get("matricula", ""))
                         new_car = st.text_input("Carrera:", value=al_data_edit.get("carrera", ""))
                         
+                        st.markdown("---")
+                        st.write("✏️ **Ajuste Manual de Horas Acumuladas:**")
+                        new_horas = st.number_input("Horas Totales del Alumno:", value=int(reg_edit.get("horas_acumuladas", 0)), min_value=0)
+
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
-                            if st.button("Guardar Cambios"):
+                            if st.button("Guardar Cambios y Horas"):
                                 supabase.table("alumnos").update({
                                     "nombre": new_nom,
                                     "matricula": new_mat,
                                     "carrera": new_car
                                 }).eq("id_alumno", al_data_edit["id_alumno"]).execute()
-                                st.success("Alumno actualizado.")
+
+                                supabase.table("servicio_social").update({
+                                    "horas_acumuladas": new_horas
+                                }).eq("id_servicio", reg_edit["id_servicio"]).execute()
+
+                                st.success("Datos y horas del estudiante actualizados.")
                                 st.rerun()
                         
                         with col_btn2:
-                            if st.button("Eliminar Registro Completo"):
+                            if st.button("Eliminar Alumno"):
                                 supabase.table("servicio_social").delete().eq("id_servicio", reg_edit["id_servicio"]).execute()
                                 supabase.table("alumnos").delete().eq("id_alumno", al_data_edit["id_alumno"]).execute()
-                                st.success("Registro borrado.")
+                                st.success("Registro eliminado.")
                                 st.rerun()
 
-                # --- DESCARGA MASIVA ZIP EVIDENCIAS ---
+                # --- DESCARGA ZIP (TOMA SOLO LA FOTO DE INICIO CHECK-IN) ---
                 with col_exp2:
-                    st.subheader("Descargar Expedientes Completos (ZIP)")
-                    st.write("Genera una carpeta comprimida con subcarpetas estructuradas para la entrega oficial.")
+                    st.subheader("Descargar Expedientes ZIP")
+                    st.write("Descarga los archivos. En asistencias solo incluye la **foto de inicio (Check-in)**.")
 
                     if st.button("Generar Archivo ZIP de Evidencias"):
-                        with st.spinner("Descargando fotos y tareas para armar el paquete ZIP..."):
+                        with st.spinner("Compilando carpetas y fotos de check-in..."):
                             zip_buffer = io.BytesIO()
 
                             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
@@ -462,6 +543,7 @@ elif st.session_state["usuario_rol"] == "admin":
 
                                     carpeta_estudiante = f"{mat}_{nom}"
 
+                                    # Solo descargamos url_foto (Foto de Entrada / Check-in)
                                     res_fotos = supabase.table("asistencias").select("fecha, url_foto").eq("id_servicio", id_serv).execute()
                                     if res_fotos.data:
                                         for idx, f in enumerate(res_fotos.data):
@@ -470,9 +552,9 @@ elif st.session_state["usuario_rol"] == "admin":
                                                 try:
                                                     resp = requests.get(url_f)
                                                     if resp.status_code == 200:
-                                                        fecha_f = f.get("fecha", f"foto_{idx}")
-                                                        nom_foto = f"{fecha_f}_{mat}_asistencia.jpg"
-                                                        ruta_en_zip = f"{carpeta_estudiante}/Asistencias/{nom_foto}"
+                                                        fecha_f = f.get("fecha", f"checkin_{idx}")
+                                                        nom_foto = f"{fecha_f}_{mat}_checkin.jpg"
+                                                        ruta_en_zip = f"{carpeta_estudiante}/Asistencias_CheckIn/{nom_foto}"
                                                         zip_file.writestr(ruta_en_zip, resp.content)
                                                 except Exception:
                                                     pass
@@ -500,46 +582,36 @@ elif st.session_state["usuario_rol"] == "admin":
                             )
 
     # ---------------------------------------------------------
-    # TAB ADMIN 2: ASISTENCIAS Y REVISIÓN DE TAREAS
+    # TAB ADMIN 2: REVISIÓN DE ASISTENCIAS Y TAREAS
     # ---------------------------------------------------------
     with tab_a2:
         if grupo_activo:
             st.subheader(f"Asistencias y Tareas - {grupo_activo}")
-            
-            sub_tab1, sub_tab2 = st.tabs(["Asistencias del Día", "Revisión de Entregables por Tarea"])
+            sub_tab1, sub_tab2 = st.tabs(["Registro de Check-in / Out del Día", "Revisión de Tareas"])
 
             with sub_tab1:
                 hoy_str = str(datetime.date.today())
-                res_cod = supabase.table("codigos_asistencia").select("codigo").eq("fecha", hoy_str).execute()
-                
-                col_cod1, col_cod2 = st.columns(2)
-                with col_cod1:
-                    if res_cod.data:
-                        st.metric("Código del Día:", res_cod.data[0]["codigo"])
-                    else:
-                        if st.button("Generar Código de Asistencia para Hoy"):
-                            nuevo_codigo = str(random.randint(1000, 9999))
-                            supabase.table("codigos_asistencia").insert({"fecha": hoy_str, "codigo": nuevo_codigo}).execute()
-                            st.rerun()
-
-                st.markdown("---")
-                st.write("### Evidencias Fotográficas de Hoy")
+                st.write("### Evidencias de Asistencia Presencial Capturadas Hoy")
 
                 res_asist_fotos = supabase.table("asistencias").select(
-                    "fecha, url_foto, created_at, alumnos(matricula, nombre)"
-                ).eq("fecha", hoy_str).order("created_at", desc=True).execute()
+                    "fecha, url_foto, foto_salida, horas_otorgadas, estado, alumnos(matricula, nombre)"
+                ).eq("fecha", hoy_str).order("id_asistencia", desc=True).execute()
 
                 if res_asist_fotos.data:
-                    cols = st.columns(4)
+                    cols = st.columns(3)
                     for idx, item in enumerate(res_asist_fotos.data):
                         al_data = item.get("alumnos", {}) or {}
-                        foto_url = item.get("url_foto")
-                        with cols[idx % 4]:
-                            st.caption(f"{item['fecha']} - {al_data.get('nombre', 'Sin nombre')}")
-                            if foto_url:
-                                st.image(foto_url, use_container_width=True)
+                        with cols[idx % 3]:
+                            st.caption(f"**{al_data.get('nombre')}** ({item['estado']}) - {item.get('horas_otorgadas', 0)} hrs ganadas")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                if item.get("url_foto"):
+                                    st.image(item["url_foto"], caption="Check-in", use_container_width=True)
+                            with c2:
+                                if item.get("foto_salida"):
+                                    st.image(item["foto_salida"], caption="Check-out", use_container_width=True)
                 else:
-                    st.info("No hay registros de asistencias capturados el día de hoy.")
+                    st.info("No hay registros de asistencia presencial capturados el día de hoy.")
 
             with sub_tab2:
                 st.write("### Consultar Tareas Entregadas por Estudiantes")
@@ -553,7 +625,7 @@ elif st.session_state["usuario_rol"] == "admin":
                     tarea_filtro_obj = mapa_tareas_rev[tarea_filtro_key]
 
                     res_entregas = supabase.table("investigaciones").select(
-                        "created_at, url_pdf, alumnos(matricula, nombre)"
+                        "created_at, url_pdf, horas_ganadas, alumnos(matricula, nombre)"
                     ).eq("id_entregable", tarea_filtro_obj["id_entregable"]).execute()
 
                     if res_entregas.data:
@@ -564,51 +636,60 @@ elif st.session_state["usuario_rol"] == "admin":
                                 "Matrícula": al_info.get("matricula"),
                                 "Alumno": al_info.get("nombre"),
                                 "Fecha Entrega": ent.get("created_at", "")[:10],
+                                "Horas Ganadas": f"{ent.get('horas_ganadas', 0)} hrs",
                                 "PDF": ent.get("url_pdf")
                             })
 
                         st.dataframe(
                             tabla_rev,
-                            column_config={
-                                "PDF": st.column_config.LinkColumn("Documento PDF", display_text="📄 Ver / Descargar PDF")
-                            },
+                            column_config={"PDF": st.column_config.LinkColumn("Documento PDF", display_text="📄 Ver / Descargar PDF")},
                             use_container_width=True
                         )
                     else:
                         st.warning("Ningún alumno ha subido respuesta para esta tarea aún.")
 
     # ---------------------------------------------------------
-    # TAB ADMIN 3: CONFIGURACIÓN, VALOR DE ASISTENCIA Y EDICIÓN DE TAREAS
+    # TAB ADMIN 3: GENERADOR DE CÓDIGO DE 10 MIN Y TAREAS
     # ---------------------------------------------------------
     with tab_a3:
-        st.subheader("⚙️ Configuración del Sistema, Horas y Tareas")
+        st.subheader("🔑 Generador de Código de 10 Minutos y Tareas")
         
-        # --- SECCIÓN 1: AJUSTE DE VALOR POR ASISTENCIA ---
-        st.markdown("### ⏱️ Configurar Horas por Asistencia")
-        res_cfg = supabase.table("configuracion_general").select("valor").eq("clave", "horas_por_asistencia").execute()
-        val_actual = int(res_cfg.data[0]["valor"]) if res_cfg.data else 2
+        # --- GENERADOR DE CÓDIGOS DE 10 MINUTOS ---
+        st.markdown("### ⏱️ Código de Asistencia Dinámico (Expira en 10 minutos)")
+        
+        col_c1, col_c2 = st.columns([2, 1])
+        with col_c1:
+            ahora_utc = datetime.datetime.now(datetime.timezone.utc)
+            res_cod_act = supabase.table("codigos_asistencia").select("*").gte("expira_at", ahora_utc.isoformat()).order("id_codigo", desc=True).execute()
 
-        col_cfg1, col_cfg2 = st.columns([2, 1])
-        with col_cfg1:
-            nuevo_val_asistencia = st.number_input("Valor en horas asignado por cada Asistencia registrada:", min_value=1, max_value=24, value=val_actual)
-        with col_cfg2:
-            st.write("")
-            st.write("")
-            if st.button("Guardar Valor de Asistencia"):
-                supabase.table("configuracion_general").upsert({"clave": "horas_por_asistencia", "valor": str(nuevo_val_asistencia)}, on_conflict="clave").execute()
+            if res_cod_act.data:
+                codigo_vigente = res_cod_act.data[0]
+                exp_dt = datetime.datetime.fromisoformat(codigo_vigente["expira_at"].replace("Z", "+00:00"))
+                min_restantes = max(0, int((exp_dt - ahora_utc).total_seconds() // 60))
                 
-                # Recalcular horas para todos los inscritos con la nueva tasa
-                res_todos_ss = supabase.table("servicio_social").select("id_servicio, grupo_semestre").execute()
-                if res_todos_ss.data:
-                    for item_ss in res_todos_ss.data:
-                        calcular_y_actualizar_horas(item_ss["id_servicio"], item_ss["grupo_semestre"])
-                
-                st.success(f"✅ Valor actualizado: Cada asistencia otorga {nuevo_val_asistencia} hrs. (Horas acumuladas recalculadas).")
+                st.metric("Código Activo:", codigo_vigente["codigo"], help=f"Expira en {min_restantes} min")
+                st.info(f"⏳ **Válido por los próximos {min_restantes} minutos** (Expira a las {exp_dt.strftime('%H:%M:%S')} UTC). Proporciónalo a los alumnos para Check-in o Check-out.")
+            else:
+                st.warning("No hay ningún código activo en este momento.")
+
+        with col_c2:
+            st.write("")
+            if st.button("🔑 Generar Código de 10 Minutos"):
+                nuevo_num = str(random.randint(1000, 9999))
+                expira_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+
+                supabase.table("codigos_asistencia").insert({
+                    "fecha": str(datetime.date.today()),
+                    "codigo": nuevo_num,
+                    "expira_at": expira_dt.isoformat()
+                }).execute()
+
+                st.success(f"¡Nuevo código generado: **{nuevo_num}**!")
                 st.rerun()
 
         st.markdown("---")
 
-        # --- SECCIÓN 2: CREACIÓN Y EDICIÓN COMPLETA DE TAREAS ---
+        # --- GESTIÓN DE GRUPOS Y TAREAS ---
         col_g1, col_g2 = st.columns(2)
         
         with col_g1:
@@ -630,11 +711,11 @@ elif st.session_state["usuario_rol"] == "admin":
         with col_g2:
             st.write("### Gestión y Edición de Tareas")
             if grupo_activo:
-                accion_tarea = st.radio("Acción de Tareas:", ["➕ Crear Nueva Tarea", "✏️ Editar Tarea Existente"], horizontal=True)
+                accion_tarea = st.radio("Acción de Tareas:", ["➕ Crear Nueva Tarea", "✏️ Editar/Eliminar Tarea"], horizontal=True)
 
                 if accion_tarea == "➕ Crear Nueva Tarea":
                     nom_tarea = st.text_input("Nombre de la Tarea")
-                    hrs_tarea = st.number_input("Horas que Otorga", min_value=1, value=10)
+                    hrs_tarea = st.number_input("Horas Base que Otorga", min_value=1, value=10)
                     desc_tarea = st.text_area("Instrucciones de la tarea")
                     
                     pdf_instruccion = st.file_uploader("Adjuntar PDF con instrucciones/guía (Opcional)", type=["pdf"])
@@ -674,32 +755,27 @@ elif st.session_state["usuario_rol"] == "admin":
                             st.rerun()
 
                 else:
-                    # --- MÓDULO DE EDICIÓN Y ELIMINACIÓN DE TAREAS EXISTENTES ---
                     res_cat_edit = supabase.table("catalogo_entregables").select("*").eq("grupo_semestre", grupo_activo).execute()
                     if not res_cat_edit.data:
-                        st.info("No hay tareas creadas en este grupo para modificar o eliminar.")
+                        st.info("No hay tareas creadas en este grupo para modificar.")
                     else:
                         mapa_edit = {f"#{t['id_entregable']} - {t['nombre_entregable']}": t for t in res_cat_edit.data}
                         tarea_edit_key = st.selectbox("Selecciona la tarea a gestionar:", list(mapa_edit.keys()))
                         tarea_edit_obj = mapa_edit[tarea_edit_key]
 
-                        st.markdown("---")
-                        
                         with st.form("form_edit_tarea"):
                             st.write(f"**Modificar Tarea #{tarea_edit_obj['id_entregable']}**")
                             edit_nom = st.text_input("Nombre de la Tarea:", value=tarea_edit_obj["nombre_entregable"])
                             edit_hrs = st.number_input("Horas que Otorga:", min_value=1, value=int(tarea_edit_obj["horas_valor"]))
                             edit_desc = st.text_area("Instrucciones:", value=tarea_edit_obj.get("descripcion", ""))
-                            
-                            edit_pdf = st.file_uploader("Actualizar/Subir PDF con guía (Opcional)", type=["pdf"])
+                            edit_pdf = st.file_uploader("Actualizar/Subir PDF guía (Opcional)", type=["pdf"])
 
-                            col_t_btn1, col_t_btn2 = st.columns(2)
-                            with col_t_btn1:
+                            c_b1, c_b2 = st.columns(2)
+                            with c_b1:
                                 btn_guardar_edit = st.form_submit_button("💾 Guardar Cambios")
-                            with col_t_btn2:
+                            with c_b2:
                                 btn_eliminar_tarea = st.form_submit_button("🗑️ Eliminar Tarea")
 
-                        # --- LÓGICA GUARDAR CAMBIOS ---
                         if btn_guardar_edit:
                             url_pdf_edit = tarea_edit_obj.get("url_pdf_instrucciones")
                             if edit_pdf is not None:
@@ -719,33 +795,18 @@ elif st.session_state["usuario_rol"] == "admin":
                                 "url_pdf_instrucciones": url_pdf_edit
                             }).eq("id_entregable", tarea_edit_obj["id_entregable"]).execute()
 
-                            # Recalcular horas por si cambiaron las horas que otorgaba la tarea
-                            res_ss_grp = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("grupo_semestre", grupo_activo).execute()
-                            if res_ss_grp.data:
-                                for item_ss in res_ss_grp.data:
-                                    calcular_y_actualizar_horas(item_ss["id_servicio"], grupo_activo)
-
                             st.success("✅ Tarea actualizada correctamente.")
                             st.rerun()
 
-                        # --- LÓGICA ELIMINAR TAREA ---
                         if btn_eliminar_tarea:
                             id_ent_borrar = tarea_edit_obj["id_entregable"]
-                            
-                            # 1. Eliminar entregas de los estudiantes vinculadas a esta tarea
                             supabase.table("investigaciones").delete().eq("id_entregable", id_ent_borrar).execute()
-                            
-                            # 2. Eliminar la tarea del catálogo
                             supabase.table("catalogo_entregables").delete().eq("id_entregable", id_ent_borrar).execute()
 
-                            # 3. Recalcular horas de todos los alumnos del grupo
                             res_ss_grp = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("grupo_semestre", grupo_activo).execute()
                             if res_ss_grp.data:
                                 for item_ss in res_ss_grp.data:
                                     calcular_y_actualizar_horas(item_ss["id_servicio"], grupo_activo)
 
-                            st.success(f"🗑️ La tarea '{tarea_edit_obj['nombre_entregable']}' ha sido eliminada y las horas fueron recalculadas.")
+                            st.success("🗑️ Tarea eliminada y horas recalculadas.")
                             st.rerun()
-
-            else:
-                st.info("Selecciona un grupo para gestionar sus tareas.")
