@@ -407,34 +407,43 @@ elif st.session_state["usuario_rol"] == "estudiante":
                         if archivo_tarea is None:
                             st.error("Adjunta el archivo PDF.")
                         else:
-                            mat_limpia = limpiar_texto(alumno["matricula"])
-                            grp_limpio = limpiar_texto(grupo_actual)
-                            nom_tarea_limpia = limpiar_texto(tarea_obj['nombre_entregable'])
+                            try:
+                                mat_limpia = limpiar_texto(alumno["matricula"])
+                                grp_limpio = limpiar_texto(grupo_actual)
+                                nom_tarea_limpia = limpiar_texto(tarea_obj['nombre_entregable'])
 
-                            ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}.pdf"
-                            supabase.storage.from_("investigaciones").upload(
-                                path=ruta_tarea,
-                                file=archivo_tarea.getvalue(),
-                                file_options={"content-type": "application/pdf", "upsert": "true"}
-                            )
-                            url_tarea = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
+                                ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}.pdf"
+                                supabase.storage.from_("investigaciones").upload(
+                                    path=ruta_tarea,
+                                    file=archivo_tarea.getvalue(),
+                                    file_options={"content-type": "application/pdf", "upsert": "true"}
+                                )
+                                url_tarea = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
 
-                            supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("id_entregable", tarea_obj['id_entregable']).execute()
+                                supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("id_entregable", tarea_obj['id_entregable']).execute()
 
-                            supabase.table("investigaciones").insert({
-                                "id_alumno": alumno["id_alumno"],
-                                "id_servicio": id_servicio,
-                                "id_entregable": tarea_obj['id_entregable'],
-                                "titulo_entrega": tarea_obj['nombre_entregable'],
-                                "url_pdf": url_tarea,
-                                "horas_ganadas": horas_a_otorgar
-                            }).execute()
+                                supabase.table("investigaciones").insert({
+                                    "id_alumno": alumno["id_alumno"],
+                                    "id_servicio": id_servicio,
+                                    "id_entregable": tarea_obj['id_entregable'],
+                                    "titulo_entrega": tarea_obj['nombre_entregable'],
+                                    "url_pdf": url_tarea,
+                                    "horas_ganadas": horas_a_otorgar
+                                }).execute()
 
-                            calcular_y_actualizar_horas(id_servicio, grupo_actual)
-                            st.success(f"✅ Tarea enviada exitosamente. Se asignaron {horas_a_otorgar} hrs a tu expediente.")
-                            st.rerun()
-        except Exception as e:
-            st.error(f"Error al cargar módulo de entregables: {e}")
+                                calcular_y_actualizar_horas(id_servicio, grupo_actual)
+                                
+                                # Guardamos la notificación en el estado de la sesión
+                                st.session_state["mensaje_exito_entrega"] = f"🎉 ¡La tarea '{tarea_obj['nombre_entregable']}' se ha entregado exitosamente! Se han asignado {horas_a_otorgar} hrs a tu expediente."
+                                st.rerun()
+
+                            except Exception as e_envio:
+                                st.error(f"Error al subir el archivo: {e_envio}")
+
+                # Mostrar el aviso de confirmación justo debajo de la selección de tarea tras la recarga
+                if "mensaje_exito_entrega" in st.session_state:
+                    st.success(st.session_state["mensaje_exito_entrega"])
+                    del st.session_state["mensaje_exito_entrega"]
 
 # =============================================================
 # 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
