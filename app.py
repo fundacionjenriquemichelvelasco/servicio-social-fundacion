@@ -774,7 +774,6 @@ elif st.session_state["usuario_rol"] == "admin":
                             }).execute()
                             st.success(f"Tarea '{nom_tarea}' creada correctamente.")
                             st.rerun()
-
                 else:
                     res_cat_edit = supabase.table("catalogo_entregables").select("*").eq("grupo_semestre", grupo_activo).execute()
                     if not res_cat_edit.data:
@@ -784,11 +783,29 @@ elif st.session_state["usuario_rol"] == "admin":
                         tarea_edit_key = st.selectbox("Selecciona la tarea a gestionar:", list(mapa_edit.keys()))
                         tarea_edit_obj = mapa_edit[tarea_edit_key]
 
+                        # Obtener fecha y hora límite previas si existen
+                        f_previa = datetime.date.today() + datetime.timedelta(days=7)
+                        h_previa = datetime.time(23, 59)
+                        if tarea_edit_obj.get("fecha_limite"):
+                            try:
+                                dt_previo = datetime.datetime.fromisoformat(tarea_edit_obj["fecha_limite"].replace("Z", "+00:00"))
+                                f_previa = dt_previo.date()
+                                h_previa = dt_previo.time()
+                            except Exception:
+                                pass
+
                         with st.form("form_edit_tarea"):
                             st.write(f"**Modificar Tarea #{tarea_edit_obj['id_entregable']}**")
                             edit_nom = st.text_input("Nombre de la Tarea:", value=tarea_edit_obj["nombre_entregable"])
                             edit_hrs = st.number_input("Horas que Otorga:", min_value=1, value=int(tarea_edit_obj["horas_valor"]))
                             edit_desc = st.text_area("Instrucciones:", value=tarea_edit_obj.get("descripcion", ""))
+                            
+                            c_ef, c_eh = st.columns(2)
+                            with c_ef:
+                                edit_f_limite = st.date_input("Fecha límite:", value=f_previa)
+                            with c_eh:
+                                edit_h_limite = st.time_input("Hora límite:", value=h_previa)
+
                             edit_pdf = st.file_uploader("Actualizar/Subir PDF guía (Opcional)", type=["pdf"])
 
                             c_b1, c_b2 = st.columns(2)
@@ -809,14 +826,19 @@ elif st.session_state["usuario_rol"] == "admin":
                                 )
                                 url_pdf_edit = supabase.storage.from_("investigaciones").get_public_url(ruta_guia)
 
+                            # Combinar fecha y hora para generar formato ISO UTC
+                            dt_edit_combinado = datetime.datetime.combine(edit_f_limite, edit_h_limite)
+                            iso_edit_limite = dt_edit_combinado.isoformat()
+
                             supabase.table("catalogo_entregables").update({
                                 "nombre_entregable": edit_nom.strip(),
                                 "horas_valor": int(edit_hrs),
                                 "descripcion": edit_desc.strip(),
+                                "fecha_limite": iso_edit_limite,
                                 "url_pdf_instrucciones": url_pdf_edit
                             }).eq("id_entregable", tarea_edit_obj["id_entregable"]).execute()
 
-                            st.success("✅ Tarea actualizada correctamente.")
+                            st.success("✅ Tarea actualizada correctamente con su nueva fecha límite.")
                             st.rerun()
 
                         if btn_eliminar_tarea:
