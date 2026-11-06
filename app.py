@@ -348,6 +348,12 @@ elif st.session_state["usuario_rol"] == "estudiante":
 
     with tab_e2:
         st.subheader("Entregables e Investigaciones")
+        
+        # Mostrar el aviso de confirmación verde si se acaba de enviar una tarea
+        if "mensaje_exito_entrega" in st.session_state:
+            st.success(st.session_state["mensaje_exito_entrega"])
+            del st.session_state["mensaje_exito_entrega"]
+
         try:
             res_ss = supabase.table("servicio_social").select("id_servicio, grupo_semestre").eq("id_alumno", alumno["id_alumno"]).order("id_servicio", desc=True).execute()
             if res_ss.data:
@@ -366,7 +372,7 @@ elif st.session_state["usuario_rol"] == "estudiante":
                     if tarea_obj.get("url_pdf_instrucciones"):
                         st.markdown(f"📄 **Guía de la tarea:** [Descargar PDF Guía]({tarea_obj['url_pdf_instrucciones']})")
 
-                   # Cálculo dinámico de penalización por entrega tardía
+                    # Cálculo dinámico de penalización por entrega tardía
                     horas_base = int(tarea_obj['horas_valor'])
                     horas_a_otorgar = horas_base
                     fecha_limite_str = tarea_obj.get("fecha_limite")
@@ -374,14 +380,11 @@ elif st.session_state["usuario_rol"] == "estudiante":
                     st.markdown("---")
                     if fecha_limite_str:
                         try:
-                            # 1. Convertir la fecha límite asegurando formato con zona horaria UTC
                             limite_dt = datetime.datetime.fromisoformat(fecha_limite_str.replace("Z", "+00:00"))
                             if limite_dt.tzinfo is None:
                                 limite_dt = limite_dt.replace(tzinfo=datetime.timezone.utc)
                             
-                            # 2. Obtener hora actual con zona horaria UTC activa
                             ahora_dt = datetime.datetime.now(datetime.timezone.utc)
-                            
                             st.write(f"📅 **Fecha límite oficial:** {limite_dt.strftime('%d/%m/%Y a las %H:%M hrs')}")
 
                             if ahora_dt > limite_dt:
@@ -433,18 +436,13 @@ elif st.session_state["usuario_rol"] == "estudiante":
 
                                 calcular_y_actualizar_horas(id_servicio, grupo_actual)
                                 
-                                # Guardamos la notificación en el estado de la sesión
+                                # Guardamos el mensaje de confirmación
                                 st.session_state["mensaje_exito_entrega"] = f"🎉 ¡La tarea '{tarea_obj['nombre_entregable']}' se ha entregado exitosamente! Se han asignado {horas_a_otorgar} hrs a tu expediente."
                                 st.rerun()
-
-                            except Exception as e_envio:
-                                st.error(f"Error al subir el archivo: {e_envio}")
-
-                # Mostrar el aviso de confirmación justo debajo de la selección de tarea tras la recarga
-                if "mensaje_exito_entrega" in st.session_state:
-                    st.success(st.session_state["mensaje_exito_entrega"])
-                    del st.session_state["mensaje_exito_entrega"]
-
+                            except Exception as e_upload:
+                                st.error(f"Error al subir el archivo: {e_upload}")
+        except Exception as e:
+            st.error(f"Error al cargar módulo de entregables: {e}")
 # =============================================================
 # 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
 # =============================================================
