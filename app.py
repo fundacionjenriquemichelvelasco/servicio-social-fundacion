@@ -755,7 +755,6 @@ elif st.session_state["usuario_rol"] == "admin":
                     expira_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
 
                     supabase.table("codigos_asistencia").insert({
-                        "fecha": str(datetime.date.today()),
                         "codigo": nuevo_num,
                         "expira_at": expira_dt.isoformat()
                     }).execute()
