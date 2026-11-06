@@ -750,17 +750,20 @@ elif st.session_state["usuario_rol"] == "admin":
         with col_c2:
             st.write("")
             if st.button("🔑 Generar Código de 10 Minutos"):
-                nuevo_num = str(random.randint(1000, 9999))
-                expira_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+                try:
+                    nuevo_num = str(random.randint(1000, 9999))
+                    expira_dt = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
 
-                supabase.table("codigos_asistencia").insert({
-                    "fecha": str(datetime.date.today()),
-                    "codigo": nuevo_num,
-                    "expira_at": expira_dt.isoformat()
-                }).execute()
+                    supabase.table("codigos_asistencia").insert({
+                        "fecha": str(datetime.date.today()),
+                        "codigo": nuevo_num,
+                        "expira_at": expira_dt.isoformat()
+                    }).execute()
 
-                st.success(f"¡Nuevo código generado: **{nuevo_num}**!")
-                st.rerun()
+                    st.success(f"¡Nuevo código generado: **{nuevo_num}**!")
+                    st.rerun()
+                except Exception as e_cod:
+                    st.error(f"Error al guardar el código en la base de datos: {e_cod}")
 
         st.markdown("---")
 
