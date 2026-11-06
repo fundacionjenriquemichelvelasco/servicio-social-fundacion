@@ -405,44 +405,59 @@ elif st.session_state["usuario_rol"] == "estudiante":
                         except Exception as e_dt:
                             st.warning(f"Fecha límite registrada: {fecha_limite_str}")
 
-                    archivo_tarea = st.file_uploader("Adjuntar archivo PDF de tu respuesta", type=["pdf"])
+                    # Selector con soporte para múltiples archivos PDF
+                    archivos_tarea = st.file_uploader(
+                        "Adjuntar archivo(s) PDF de tu respuesta (Puedes subir 2 o más archivos)", 
+                        type=["pdf"], 
+                        accept_multiple_files=True
+                    )
+
                     if st.button("Enviar Tarea"):
-                        if archivo_tarea is None:
-                            st.error("Adjunta el archivo PDF.")
+                        if not archivos_tarea:
+                            st.error("Adjunta al menos un archivo PDF para entregar tu tarea.")
                         else:
                             try:
                                 mat_limpia = limpiar_texto(alumno["matricula"])
                                 grp_limpio = limpiar_texto(grupo_actual)
                                 nom_tarea_limpia = limpiar_texto(tarea_obj['nombre_entregable'])
 
-                                ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}.pdf"
-                                supabase.storage.from_("investigaciones").upload(
-                                    path=ruta_tarea,
-                                    file=archivo_tarea.getvalue(),
-                                    file_options={"content-type": "application/pdf", "upsert": "true"}
-                                )
-                                url_tarea = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
-
+                                # Limpiar entregas previas de esta tarea para el estudiante
                                 supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("id_entregable", tarea_obj['id_entregable']).execute()
+
+                                urls_subidas = []
+
+                                # Iterar sobre cada archivo subido
+                                for idx, archivo in enumerate(archivos_tarea, start=1):
+                                    suffix = f"_parte{idx}" if len(archivos_tarea) > 1 else ""
+                                    ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}{suffix}.pdf"
+                                    
+                                    supabase.storage.from_("investigaciones").upload(
+                                        path=ruta_tarea,
+                                        file=archivo.getvalue(),
+                                        file_options={"content-type": "application/pdf", "upsert": "true"}
+                                    )
+                                    url_doc = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
+                                    urls_subidas.append(url_doc)
+
+                                # Guardar las URLs combinadas (separadas por coma si son varias)
+                                url_final = ", ".join(urls_subidas)
 
                                 supabase.table("investigaciones").insert({
                                     "id_alumno": alumno["id_alumno"],
                                     "id_servicio": id_servicio,
                                     "id_entregable": tarea_obj['id_entregable'],
                                     "titulo_entrega": tarea_obj['nombre_entregable'],
-                                    "url_pdf": url_tarea,
+                                    "url_pdf": url_final,
                                     "horas_ganadas": horas_a_otorgar
                                 }).execute()
 
                                 calcular_y_actualizar_horas(id_servicio, grupo_actual)
                                 
-                                # Guardamos el mensaje de confirmación
-                                st.session_state["mensaje_exito_entrega"] = f"🎉 ¡La tarea '{tarea_obj['nombre_entregable']}' se ha entregado exitosamente! Se han asignado {horas_a_otorgar} hrs a tu expediente."
+                                st.session_state["mensaje_exito_entrega"] = f"🎉 ¡La tarea '{tarea_obj['nombre_entregable']}' ({len(archivos_tarea)} archivo(s)) se ha entregado exitosamente! Se asignaron {horas_a_otorgar} hrs a tu expediente."
                                 st.rerun()
+
                             except Exception as e_upload:
-                                st.error(f"Error al subir el archivo: {e_upload}")
-        except Exception as e:
-            st.error(f"Error al cargar módulo de entregables: {e}")
+                                st.error(f"Error al subir los archivos: {e_upload}")
 # =============================================================
 # 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
 # =============================================================
@@ -610,16 +625,20 @@ elif st.session_state["usuario_rol"] == "admin":
                                         zip_file.writestr(f"{carpeta_estudiante}/Asistencias_CheckIn/SIN_ASISTENCIAS.txt", "## SIN REGISTRO DE ASISTENCIAS ##")
 
                                     # 3. Descargar tareas
+                                    # Descargar tareas (Soporte para múltiples PDFs)
                                     res_tareas = supabase.table("investigaciones").select("titulo_entrega, url_pdf").eq("id_servicio", id_serv).execute()
                                     if res_tareas.data:
                                         for t in res_tareas.data:
-                                            url_t = t.get("url_pdf")
-                                            if url_t:
+                                            urls_pdf_str = t.get("url_pdf") or ""
+                                            lista_urls = [u.strip() for u in urls_pdf_str.split(",") if u.strip()]
+                                            nom_t = limpiar_texto(t.get("titulo_entrega") or "##")
+
+                                            for idx_u, url_individual in enumerate(lista_urls, start=1):
                                                 try:
-                                                    resp = requests.get(url_t)
+                                                    resp = requests.get(url_individual)
                                                     if resp.status_code == 200:
-                                                        nom_t = limpiar_texto(t.get("titulo_entrega") or "##")
-                                                        ruta_en_zip = f"{carpeta_estudiante}/Tareas/{nom_t}.pdf"
+                                                        sufijo_zip = f"_parte{idx_u}" if len(lista_urls) > 1 else ""
+                                                        ruta_en_zip = f"{carpeta_estudiante}/Tareas/{nom_t}{sufijo_zip}.pdf"
                                                         zip_file.writestr(ruta_en_zip, resp.content)
                                                 except Exception:
                                                     pass
