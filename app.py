@@ -657,7 +657,36 @@ elif st.session_state["usuario_rol"] == "admin":
     # ---------------------------------------------------------
     # TAB ADMIN 2: REVISIÓN DE ASISTENCIAS Y TAREAS
     # ---------------------------------------------------------
-    with sub_tab2:
+    with tab_a2:
+        if grupo_activo:
+            st.subheader(f"Asistencias y Tareas - {grupo_activo}")
+            sub_tab1, sub_tab2 = st.tabs(["Registro de Check-in / Out del Día", "Revisión de Tareas"])
+
+            with sub_tab1:
+                hoy_str = str(datetime.date.today())
+                st.write("### Evidencias de Asistencia Presencial Capturadas Hoy")
+
+                res_asist_fotos = supabase.table("asistencias").select(
+                    "fecha, url_foto, foto_salida, horas_otorgadas, estado, alumnos(matricula, nombre)"
+                ).eq("fecha", hoy_str).order("id_asistencia", desc=True).execute()
+
+                if res_asist_fotos.data:
+                    cols = st.columns(3)
+                    for idx, item in enumerate(res_asist_fotos.data):
+                        al_data = item.get("alumnos", {}) or {}
+                        with cols[idx % 3]:
+                            st.caption(f"**{al_data.get('nombre')}** ({item['estado']}) - {item.get('horas_otorgadas', 0)} hrs ganadas")
+                            c1, c2 = st.columns(2)
+                            with c1:
+                                if item.get("url_foto"):
+                                    st.image(item["url_foto"], caption="Check-in", use_container_width=True)
+                            with c2:
+                                if item.get("foto_salida"):
+                                    st.image(item["foto_salida"], caption="Check-out", use_container_width=True)
+                else:
+                    st.info("No hay registros de asistencia presencial capturados el día de hoy.")
+
+            with sub_tab2:
                 st.write("### Consultar Tareas Entregadas por Estudiantes")
                 res_cat_t = supabase.table("catalogo_entregables").select("id_entregable, nombre_entregable").eq("grupo_semestre", grupo_activo).execute()
                 
@@ -691,41 +720,6 @@ elif st.session_state["usuario_rol"] == "admin":
                                 st.write("⚠️ Sin archivo disponible.")
 
                             st.divider()
-                    else:
-                        st.warning("Ningún alumno ha subido respuesta para esta tarea aún.")
-
-            with sub_tab2:
-                st.write("### Consultar Tareas Entregadas por Estudiantes")
-                res_cat_t = supabase.table("catalogo_entregables").select("id_entregable, nombre_entregable").eq("grupo_semestre", grupo_activo).execute()
-                
-                if not res_cat_t.data:
-                    st.info("No se han publicado tareas para este grupo.")
-                else:
-                    mapa_tareas_rev = {f"#{t['id_entregable']} - {t['nombre_entregable']}": t for t in res_cat_t.data}
-                    tarea_filtro_key = st.selectbox("Selecciona la tarea a revisar:", list(mapa_tareas_rev.keys()))
-                    tarea_filtro_obj = mapa_tareas_rev[tarea_filtro_key]
-
-                    res_entregas = supabase.table("investigaciones").select(
-                        "created_at, url_pdf, horas_ganadas, alumnos(matricula, nombre)"
-                    ).eq("id_entregable", tarea_filtro_obj["id_entregable"]).execute()
-
-                    if res_entregas.data:
-                        tabla_rev = []
-                        for ent in res_entregas.data:
-                            al_info = ent.get("alumnos", {}) or {}
-                            tabla_rev.append({
-                                "Matrícula": al_info.get("matricula"),
-                                "Alumno": al_info.get("nombre"),
-                                "Fecha Entrega": ent.get("created_at", "")[:10],
-                                "Horas Ganadas": f"{ent.get('horas_ganadas', 0)} hrs",
-                                "PDF": ent.get("url_pdf")
-                            })
-
-                        st.dataframe(
-                            tabla_rev,
-                            column_config={"PDF": st.column_config.LinkColumn("Documento PDF", display_text="📄 Ver / Descargar PDF")},
-                            use_container_width=True
-                        )
                     else:
                         st.warning("Ningún alumno ha subido respuesta para esta tarea aún.")
 
