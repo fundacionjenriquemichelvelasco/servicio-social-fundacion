@@ -767,6 +767,11 @@ elif st.session_state["usuario_rol"] == "admin":
                 accion_tarea = st.radio("Acción de Tareas:", ["➕ Crear Nueva Tarea", "✏️ Editar/Eliminar Tarea"], horizontal=True)
 
                 if accion_tarea == "➕ Crear Nueva Tarea":
+                    # Mostrar banner de confirmación si se acaba de crear una tarea
+                    if "mensaje_exito_crear_tarea" in st.session_state:
+                        st.success(st.session_state["mensaje_exito_crear_tarea"])
+                        del st.session_state["mensaje_exito_crear_tarea"]
+
                     nom_tarea = st.text_input("Nombre de la Tarea")
                     hrs_tarea = st.number_input("Horas Base que Otorga", min_value=1, value=10)
                     desc_tarea = st.text_area("Instrucciones de la tarea")
@@ -780,32 +785,40 @@ elif st.session_state["usuario_rol"] == "admin":
                         h_limite = st.time_input("Hora límite", value=datetime.time(23, 59))
 
                     if st.button("Asignar Tarea al Grupo"):
-                        if nom_tarea.strip():
-                            url_pdf_guia = None
-                            if pdf_instruccion is not None:
-                                nom_guia_limpio = limpiar_texto(nom_tarea)
-                                ruta_guia = f"guias_tareas/{limpiar_texto(grupo_activo)}/{nom_guia_limpio}_guia.pdf"
-                                supabase.storage.from_("investigaciones").upload(
-                                    path=ruta_guia,
-                                    file=pdf_instruccion.getvalue(),
-                                    file_options={"content-type": "application/pdf", "upsert": "true"}
-                                )
-                                url_pdf_guia = supabase.storage.from_("investigaciones").get_public_url(ruta_guia)
+                        if not nom_tarea.strip():
+                            st.error("Ingresa un nombre para la tarea.")
+                        else:
+                            try:
+                                url_pdf_guia = None
+                                if pdf_instruccion is not None:
+                                    nom_guia_limpio = limpiar_texto(nom_tarea)
+                                    ruta_guia = f"guias_tareas/{limpiar_texto(grupo_activo)}/{nom_guia_limpio}_guia.pdf"
+                                    supabase.storage.from_("investigaciones").upload(
+                                        path=ruta_guia,
+                                        file=pdf_instruccion.getvalue(),
+                                        file_options={"content-type": "application/pdf", "upsert": "true"}
+                                    )
+                                    url_pdf_guia = supabase.storage.from_("investigaciones").get_public_url(ruta_guia)
 
-                            dt_combinado = datetime.datetime.combine(f_limite, h_limite)
-                            iso_limite = dt_combinado.isoformat()
+                                dt_combinado = datetime.datetime.combine(f_limite, h_limite)
+                                iso_limite = dt_combinado.isoformat()
 
-                            supabase.table("catalogo_entregables").insert({
-                                "grupo_semestre": grupo_activo,
-                                "nombre_entregable": nom_tarea.strip(),
-                                "horas_valor": int(hrs_tarea),
-                                "descripcion": desc_tarea.strip(),
-                                "url_pdf_instrucciones": url_pdf_guia,
-                                "fecha_limite": iso_limite,
-                                "activo": True
-                            }).execute()
-                            st.success(f"Tarea '{nom_tarea}' creada correctamente.")
-                            st.rerun()
+                                supabase.table("catalogo_entregables").insert({
+                                    "grupo_semestre": grupo_activo,
+                                    "nombre_entregable": nom_tarea.strip(),
+                                    "horas_valor": int(hrs_tarea),
+                                    "descripcion": desc_tarea.strip(),
+                                    "url_pdf_instrucciones": url_pdf_guia,
+                                    "fecha_limite": iso_limite,
+                                    "activo": True
+                                }).execute()
+
+                                # Guardamos el mensaje en el estado de la sesión antes del rerun
+                                st.session_state["mensaje_exito_crear_tarea"] = f"🎉 ¡La tarea '{nom_tarea.strip()}' se ha publicado exitosamente en el grupo '{grupo_activo}'!"
+                                st.rerun()
+
+                            except Exception as e_crear:
+                                st.error(f"Error al publicar la tarea: {e_crear}")
                 else:
                     res_cat_edit = supabase.table("catalogo_entregables").select("*").eq("grupo_semestre", grupo_activo).execute()
                     if not res_cat_edit.data:
