@@ -26,6 +26,8 @@ supabase = init_supabase()
 
 def limpiar_texto(texto: str) -> str:
     """Elimina acentos y caracteres especiales para rutas de archivos y nombres."""
+    if not texto:
+        return "##"
     nfkd_form = unicodedata.normalize('NFKD', texto)
     texto_sin_acentos = "".join([c for c in nfkd_form if not unicodedata.combining(c)])
     return re.sub(r'[^a-zA-Z0-9_\-]', '_', texto_sin_acentos)
@@ -60,19 +62,28 @@ def calcular_horas_presenciales(check_in_dt, check_out_dt):
     return horas_finales, False
 
 def calcular_y_actualizar_horas(id_servicio: int, grupo_semestre: str):
-    """Suma las horas presenciales de asistencias cerradas + horas de tareas calculadas."""
+    """Calcula automáticamente las horas acumuladas por asistencias y tareas entregadas."""
     try:
-        # 1. Sumar horas de asistencias válidas
-        res_asist = supabase.table("asistencias").select("horas_otorgadas, estado").eq("id_servicio", id_servicio).eq("estado", "COMPLETADA").execute()
+        # 1. Sumar horas de asistencias válidas (Completadas)
+        res_asist = supabase.table("asistencias").select("horas_otorgadas").eq("id_servicio", id_servicio).eq("estado", "COMPLETADA").execute()
         total_asistencias = sum(a.get("horas_otorgadas", 0) for a in res_asist.data) if res_asist.data else 0
 
-        # 2. Sumar horas de tareas
+        # 2. Sumar únicamente la última entrega por cada tarea (id_entregable)
         res_inv = supabase.table("investigaciones").select("id_entregable, horas_ganadas").eq("id_servicio", id_servicio).execute()
-        total_tareas = sum(i.get("horas_ganadas", 0) for i in res_inv.data) if res_inv.data else 0
+        
+        total_tareas = 0
+        if res_inv.data:
+            tareas_map = {}
+            for item in res_inv.data:
+                id_ent = item.get("id_entregable")
+                if id_ent:
+                    tareas_map[id_ent] = item.get("horas_ganadas", 0)
+            
+            total_tareas = sum(tareas_map.values())
 
         total_acumulado = total_asistencias + total_tareas
 
-        # Respetar si la administradora hizo un ajuste manual previo
+        # Guardar en la base de datos el total exacto
         supabase.table("servicio_social").update({"horas_acumuladas": total_acumulado}).eq("id_servicio", id_servicio).execute()
 
     except Exception as e:
@@ -229,18 +240,15 @@ elif st.session_state["usuario_rol"] == "estudiante":
             id_servicio = res_ss.data[0]["id_servicio"]
             grupo_semestre = res_ss.data[0]["grupo_semestre"]
 
-            # Verificar si tiene un Check-in pendiente activo
             res_activa = supabase.table("asistencias").select("*").eq("id_alumno", alumno["id_alumno"]).eq("estado", "ACTIVA").execute()
             asistencia_pendiente = None
             
             if res_activa.data:
-                # Filtramos únicamente registros que tengan una fecha válida de Check-in
                 for item_asist in res_activa.data:
                     if item_asist.get("check_in_at"):
                         asistencia_pendiente = item_asist
                         break
 
-            # Auto-cancelación si pasaron más de 8 horas desde la entrada
             if asistencia_pendiente and asistencia_pendiente.get("check_in_at"):
                 try:
                     str_checkin = str(asistencia_pendiente["check_in_at"]).replace("Z", "+00:00")
@@ -251,7 +259,7 @@ elif st.session_state["usuario_rol"] == "estudiante":
                         supabase.table("asistencias").update({"estado": "CANCELADA_EXCESO_TIEMPO", "horas_otorgadas": 0}).eq("id_asistencia", asistencia_pendiente["id_asistencia"]).execute()
                         st.warning("⚠️ Tu sesión de Check-in anterior sobrepasó las 8 horas sin marcar salida y fue cancelada. Inicia una nueva sesión.")
                         asistencia_pendiente = None
-                except Exception as e_dt:
+                except Exception:
                     asistencia_pendiente = None
 
             if not asistencia_pendiente:
@@ -402,10 +410,10 @@ elif st.session_state["usuario_rol"] == "estudiante":
                                     st.error("❌ **Entrega con más de 2 días de retraso:** Puedes subir tu tarea para revisión de evidencia, pero otorgará **0 horas**.")
                             else:
                                 st.info(f"✅ **Entrega a tiempo:** Esta tarea otorgará **{horas_a_otorgar} hrs** completas.")
-                        except Exception as e_dt:
+                        except Exception:
                             st.warning(f"Fecha límite registrada: {fecha_limite_str}")
 
-                    # Selector con soporte para múltiples archivos PDF
+                    # Permite adjuntar múltiples archivos PDF
                     archivos_tarea = st.file_uploader(
                         "Adjuntar archivo(s) PDF de tu respuesta (Puedes subir 2 o más archivos)", 
                         type=["pdf"], 
@@ -421,12 +429,10 @@ elif st.session_state["usuario_rol"] == "estudiante":
                                 grp_limpio = limpiar_texto(grupo_actual)
                                 nom_tarea_limpia = limpiar_texto(tarea_obj['nombre_entregable'])
 
-                                # Limpiar entregas previas de esta tarea para el estudiante
+                                # Limpiar entregas anteriores de esta tarea
                                 supabase.table("investigaciones").delete().eq("id_servicio", id_servicio).eq("id_entregable", tarea_obj['id_entregable']).execute()
 
                                 urls_subidas = []
-
-                                # Iterar sobre cada archivo subido
                                 for idx, archivo in enumerate(archivos_tarea, start=1):
                                     suffix = f"_parte{idx}" if len(archivos_tarea) > 1 else ""
                                     ruta_tarea = f"expedientes/{grp_limpio}/{mat_limpia}/entregables/{tarea_obj['id_entregable']}_{nom_tarea_limpia}{suffix}.pdf"
@@ -439,7 +445,6 @@ elif st.session_state["usuario_rol"] == "estudiante":
                                     url_doc = supabase.storage.from_("investigaciones").get_public_url(ruta_tarea)
                                     urls_subidas.append(url_doc)
 
-                                # Guardar las URLs combinadas (separadas por coma si son varias)
                                 url_final = ", ".join(urls_subidas)
 
                                 supabase.table("investigaciones").insert({
@@ -458,6 +463,9 @@ elif st.session_state["usuario_rol"] == "estudiante":
 
                             except Exception as e_upload:
                                 st.error(f"Error al subir los archivos: {e_upload}")
+        except Exception as e:
+            st.error(f"Error al cargar módulo de entregables: {e}")
+
 # =============================================================
 # 4. PANEL EXCLUSIVO DE LA ADMINISTRADORA
 # =============================================================
@@ -489,13 +497,12 @@ elif st.session_state["usuario_rol"] == "admin":
         "⚙️ Generar Código y Configuración"
     ])
 
-# ---------------------------------------------------------
+    # ---------------------------------------------------------
     # TAB ADMIN 1: ALUMNOS, MODIFICACIÓN DE ESTADO/HORAS Y ZIP
     # ---------------------------------------------------------
     with tab_a1:
         if grupo_activo:
             st.subheader(f"Estudiantes Registrados - {grupo_activo}")
-            # Consultamos TODOS los alumnos (En Proceso, Concluido, Dado de Baja)
             res_ss = supabase.table("servicio_social").select(
                 "id_servicio, id_alumno, periodo, grupo_semestre, url_foda, horas_acumuladas, estado, alumnos(id_alumno, matricula, nombre, contacto, correo, carrera)"
             ).eq("grupo_semestre", grupo_activo).execute()
@@ -542,7 +549,6 @@ elif st.session_state["usuario_rol"] == "admin":
                         new_mat = st.text_input("Matrícula:", value=al_data_edit.get("matricula", "##"))
                         new_car = st.text_input("Carrera:", value=al_data_edit.get("carrera", "##"))
                         
-                        # Opción para cambiar el estado a Dado de Baja
                         estados_disponibles = ["En Proceso", "Concluido", "Dado de Baja"]
                         idx_est = estados_disponibles.index(reg_edit.get("estado", "En Proceso")) if reg_edit.get("estado") in estados_disponibles else 0
                         new_estado = st.selectbox("Estado del Estudiante:", estados_disponibles, index=idx_est)
@@ -575,7 +581,7 @@ elif st.session_state["usuario_rol"] == "admin":
                                 st.success("Registro borrado completamente.")
                                 st.rerun()
 
-                # --- DESCARGA ZIP INCLUYENDO DADOS DE BAJA ---
+                # --- DESCARGA ZIP INCLUYENDO DADOS DE BAJA Y MÚLTIPLES ENTREGAS ---
                 with col_exp2:
                     st.subheader("Descargar Expedientes ZIP")
                     st.write("Genera el paquete con **todos** los estudiantes (incluye dados de baja y marcas `##` si faltan datos).")
@@ -592,11 +598,9 @@ elif st.session_state["usuario_rol"] == "admin":
                                     estado_al = reg.get("estado", "En Proceso")
                                     id_serv = reg["id_servicio"]
 
-                                    # Si está dado de baja se le añade la etiqueta a la carpeta
                                     tag_estado = " [DADO_DE_BAJA]" if estado_al == "Dado de Baja" else ""
                                     carpeta_estudiante = f"{mat}_{nom}{tag_estado}"
 
-                                    # 1. Guardar resumen informativo del estudiante
                                     info_txt = f"MATRICULA: {al_info.get('matricula') or '##'}\n"
                                     info_txt += f"NOMBRE: {al_info.get('nombre') or '##'}\n"
                                     info_txt += f"CARRERA: {al_info.get('carrera') or '##'}\n"
@@ -606,7 +610,6 @@ elif st.session_state["usuario_rol"] == "admin":
 
                                     zip_file.writestr(f"{carpeta_estudiante}/INFORMACION_ESTUDIANTE.txt", info_txt)
 
-                                    # 2. Descargar asistencias de Check-in
                                     res_fotos = supabase.table("asistencias").select("fecha, url_foto").eq("id_servicio", id_serv).execute()
                                     if res_fotos.data:
                                         for idx, f in enumerate(res_fotos.data):
@@ -624,8 +627,6 @@ elif st.session_state["usuario_rol"] == "admin":
                                     else:
                                         zip_file.writestr(f"{carpeta_estudiante}/Asistencias_CheckIn/SIN_ASISTENCIAS.txt", "## SIN REGISTRO DE ASISTENCIAS ##")
 
-                                    # 3. Descargar tareas
-                                    # Descargar tareas (Soporte para múltiples PDFs)
                                     res_tareas = supabase.table("investigaciones").select("titulo_entrega, url_pdf").eq("id_servicio", id_serv).execute()
                                     if res_tareas.data:
                                         for t in res_tareas.data:
@@ -786,7 +787,6 @@ elif st.session_state["usuario_rol"] == "admin":
                 accion_tarea = st.radio("Acción de Tareas:", ["➕ Crear Nueva Tarea", "✏️ Editar/Eliminar Tarea"], horizontal=True)
 
                 if accion_tarea == "➕ Crear Nueva Tarea":
-                    # Mostrar banner de confirmación si se acaba de crear una tarea
                     if "mensaje_exito_crear_tarea" in st.session_state:
                         st.success(st.session_state["mensaje_exito_crear_tarea"])
                         del st.session_state["mensaje_exito_crear_tarea"]
@@ -832,12 +832,12 @@ elif st.session_state["usuario_rol"] == "admin":
                                     "activo": True
                                 }).execute()
 
-                                # Guardamos el mensaje en el estado de la sesión antes del rerun
                                 st.session_state["mensaje_exito_crear_tarea"] = f"🎉 ¡La tarea '{nom_tarea.strip()}' se ha publicado exitosamente en el grupo '{grupo_activo}'!"
                                 st.rerun()
 
                             except Exception as e_crear:
                                 st.error(f"Error al publicar la tarea: {e_crear}")
+
                 else:
                     res_cat_edit = supabase.table("catalogo_entregables").select("*").eq("grupo_semestre", grupo_activo).execute()
                     if not res_cat_edit.data:
@@ -847,7 +847,6 @@ elif st.session_state["usuario_rol"] == "admin":
                         tarea_edit_key = st.selectbox("Selecciona la tarea a gestionar:", list(mapa_edit.keys()))
                         tarea_edit_obj = mapa_edit[tarea_edit_key]
 
-                        # Obtener fecha y hora límite previas si existen
                         f_previa = datetime.date.today() + datetime.timedelta(days=7)
                         h_previa = datetime.time(23, 59)
                         if tarea_edit_obj.get("fecha_limite"):
@@ -890,7 +889,6 @@ elif st.session_state["usuario_rol"] == "admin":
                                 )
                                 url_pdf_edit = supabase.storage.from_("investigaciones").get_public_url(ruta_guia)
 
-                            # Combinar fecha y hora para generar formato ISO UTC
                             dt_edit_combinado = datetime.datetime.combine(edit_f_limite, edit_h_limite)
                             iso_edit_limite = dt_edit_combinado.isoformat()
 
