@@ -467,12 +467,13 @@ elif st.session_state["usuario_rol"] == "admin":
         "⚙️ Generar Código y Configuración"
     ])
 
-    # ---------------------------------------------------------
-    # TAB ADMIN 1: ALUMNOS, MODIFICACIÓN MANUAL DE HORAS Y ZIP
+# ---------------------------------------------------------
+    # TAB ADMIN 1: ALUMNOS, MODIFICACIÓN DE ESTADO/HORAS Y ZIP
     # ---------------------------------------------------------
     with tab_a1:
         if grupo_activo:
             st.subheader(f"Estudiantes Registrados - {grupo_activo}")
+            # Consultamos TODOS los alumnos (En Proceso, Concluido, Dado de Baja)
             res_ss = supabase.table("servicio_social").select(
                 "id_servicio, id_alumno, periodo, grupo_semestre, url_foda, horas_acumuladas, estado, alumnos(id_alumno, matricula, nombre, contacto, correo, carrera)"
             ).eq("grupo_semestre", grupo_activo).execute()
@@ -483,16 +484,16 @@ elif st.session_state["usuario_rol"] == "admin":
 
                 for d in res_ss.data:
                     al = d.get("alumnos", {}) or {}
-                    mat_al = al.get("matricula", "")
-                    nombre_al = al.get("nombre", "")
-                    label = f"{mat_al} - {nombre_al}"
+                    mat_al = al.get("matricula", "##")
+                    nombre_al = al.get("nombre", "##")
+                    label = f"{mat_al} - {nombre_al} ({d['estado']})"
                     opciones_alumnos[label] = d
 
                     tabla_alumnos.append({
                         "Matrícula": mat_al,
                         "Nombre": nombre_al,
-                        "Carrera": al.get("carrera"),
-                        "Contacto": al.get("contacto"),
+                        "Carrera": al.get("carrera", "##"),
+                        "Contacto": al.get("contacto", "##"),
                         "FODA": d.get("url_foda"),
                         "Horas Totales": f"{d['horas_acumuladas']} hrs",
                         "Estado": d["estado"]
@@ -507,25 +508,30 @@ elif st.session_state["usuario_rol"] == "admin":
                 st.markdown("---")
                 col_exp1, col_exp2 = st.columns(2)
 
-                # --- EDICIÓN Y AJUSTE MANUAL DE HORAS DEL ESTUDIANTE ---
+                # --- EDICIÓN, ESTADO Y AJUSTE MANUAL DE HORAS ---
                 with col_exp1:
-                    st.subheader("Editar Datos u Horas del Estudiante")
+                    st.subheader("Editar Datos, Estado u Horas del Estudiante")
                     alumno_sel_edit = st.selectbox("Selecciona Alumno:", list(opciones_alumnos.keys()))
                     reg_edit = opciones_alumnos[alumno_sel_edit]
                     al_data_edit = reg_edit.get("alumnos", {}) or {}
 
-                    with st.expander("Formulario de Edición y Ajuste de Horas"):
-                        new_nom = st.text_input("Nombre Completo:", value=al_data_edit.get("nombre", ""))
-                        new_mat = st.text_input("Matrícula:", value=al_data_edit.get("matricula", ""))
-                        new_car = st.text_input("Carrera:", value=al_data_edit.get("carrera", ""))
+                    with st.expander("Formulario de Edición y Cambio de Estado"):
+                        new_nom = st.text_input("Nombre Completo:", value=al_data_edit.get("nombre", "##"))
+                        new_mat = st.text_input("Matrícula:", value=al_data_edit.get("matricula", "##"))
+                        new_car = st.text_input("Carrera:", value=al_data_edit.get("carrera", "##"))
                         
+                        # Opción para cambiar el estado a Dado de Baja
+                        estados_disponibles = ["En Proceso", "Concluido", "Dado de Baja"]
+                        idx_est = estados_disponibles.index(reg_edit.get("estado", "En Proceso")) if reg_edit.get("estado") in estados_disponibles else 0
+                        new_estado = st.selectbox("Estado del Estudiante:", estados_disponibles, index=idx_est)
+
                         st.markdown("---")
                         st.write("✏️ **Ajuste Manual de Horas Acumuladas:**")
                         new_horas = st.number_input("Horas Totales del Alumno:", value=int(reg_edit.get("horas_acumuladas", 0)), min_value=0)
 
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
-                            if st.button("Guardar Cambios y Horas"):
+                            if st.button("Guardar Cambios y Estado"):
                                 supabase.table("alumnos").update({
                                     "nombre": new_nom,
                                     "matricula": new_mat,
@@ -533,38 +539,52 @@ elif st.session_state["usuario_rol"] == "admin":
                                 }).eq("id_alumno", al_data_edit["id_alumno"]).execute()
 
                                 supabase.table("servicio_social").update({
-                                    "horas_acumuladas": new_horas
+                                    "horas_acumuladas": new_horas,
+                                    "estado": new_estado
                                 }).eq("id_servicio", reg_edit["id_servicio"]).execute()
 
-                                st.success("Datos y horas del estudiante actualizados.")
+                                st.success("Datos y estado del estudiante actualizados.")
                                 st.rerun()
                         
                         with col_btn2:
-                            if st.button("Eliminar Alumno"):
+                            if st.button("Eliminar Registro Definitivo"):
                                 supabase.table("servicio_social").delete().eq("id_servicio", reg_edit["id_servicio"]).execute()
                                 supabase.table("alumnos").delete().eq("id_alumno", al_data_edit["id_alumno"]).execute()
-                                st.success("Registro eliminado.")
+                                st.success("Registro borrado completamente.")
                                 st.rerun()
 
-                # --- DESCARGA ZIP (TOMA SOLO LA FOTO DE INICIO CHECK-IN) ---
+                # --- DESCARGA ZIP INCLUYENDO DADOS DE BAJA ---
                 with col_exp2:
                     st.subheader("Descargar Expedientes ZIP")
-                    st.write("Descarga los archivos. En asistencias solo incluye la **foto de inicio (Check-in)**.")
+                    st.write("Genera el paquete con **todos** los estudiantes (incluye dados de baja y marcas `##` si faltan datos).")
 
-                    if st.button("Generar Archivo ZIP de Evidencias"):
-                        with st.spinner("Compilando carpetas y fotos de check-in..."):
+                    if st.button("Generar Archivo ZIP Completo de Evidencias"):
+                        with st.spinner("Compilando registros y carpetas completas..."):
                             zip_buffer = io.BytesIO()
 
                             with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
                                 for reg in res_ss.data:
                                     al_info = reg.get("alumnos", {}) or {}
-                                    mat = limpiar_texto(al_info.get("matricula", "desconocido"))
-                                    nom = limpiar_texto(al_info.get("nombre", "alumno"))
+                                    mat = limpiar_texto(al_info.get("matricula") or "##")
+                                    nom = limpiar_texto(al_info.get("nombre") or "##")
+                                    estado_al = reg.get("estado", "En Proceso")
                                     id_serv = reg["id_servicio"]
 
-                                    carpeta_estudiante = f"{mat}_{nom}"
+                                    # Si está dado de baja se le añade la etiqueta a la carpeta
+                                    tag_estado = " [DADO_DE_BAJA]" if estado_al == "Dado de Baja" else ""
+                                    carpeta_estudiante = f"{mat}_{nom}{tag_estado}"
 
-                                    # Solo descargamos url_foto (Foto de Entrada / Check-in)
+                                    # 1. Guardar resumen informativo del estudiante
+                                    info_txt = f"MATRICULA: {al_info.get('matricula') or '##'}\n"
+                                    info_txt += f"NOMBRE: {al_info.get('nombre') or '##'}\n"
+                                    info_txt += f"CARRERA: {al_info.get('carrera') or '##'}\n"
+                                    info_txt += f"ESTADO REGISTRADO: {estado_al}\n"
+                                    info_txt += f"HORAS ACUMULADAS: {reg.get('horas_acumuladas', 0)} hrs\n"
+                                    info_txt += f"EXPEDIENTE FODA: {reg.get('url_foda') or '##'}\n"
+
+                                    zip_file.writestr(f"{carpeta_estudiante}/INFORMACION_ESTUDIANTE.txt", info_txt)
+
+                                    # 2. Descargar asistencias de Check-in
                                     res_fotos = supabase.table("asistencias").select("fecha, url_foto").eq("id_servicio", id_serv).execute()
                                     if res_fotos.data:
                                         for idx, f in enumerate(res_fotos.data):
@@ -579,7 +599,10 @@ elif st.session_state["usuario_rol"] == "admin":
                                                         zip_file.writestr(ruta_en_zip, resp.content)
                                                 except Exception:
                                                     pass
+                                    else:
+                                        zip_file.writestr(f"{carpeta_estudiante}/Asistencias_CheckIn/SIN_ASISTENCIAS.txt", "## SIN REGISTRO DE ASISTENCIAS ##")
 
+                                    # 3. Descargar tareas
                                     res_tareas = supabase.table("investigaciones").select("titulo_entrega, url_pdf").eq("id_servicio", id_serv).execute()
                                     if res_tareas.data:
                                         for t in res_tareas.data:
@@ -588,17 +611,19 @@ elif st.session_state["usuario_rol"] == "admin":
                                                 try:
                                                     resp = requests.get(url_t)
                                                     if resp.status_code == 200:
-                                                        nom_t = limpiar_texto(t.get("titulo_entrega", "tarea"))
+                                                        nom_t = limpiar_texto(t.get("titulo_entrega") or "##")
                                                         ruta_en_zip = f"{carpeta_estudiante}/Tareas/{nom_t}.pdf"
                                                         zip_file.writestr(ruta_en_zip, resp.content)
                                                 except Exception:
                                                     pass
+                                    else:
+                                        zip_file.writestr(f"{carpeta_estudiante}/Tareas/SIN_TAREAS.txt", "## SIN ENTREGABLES REGISTRADOS ##")
 
                             zip_buffer.seek(0)
                             st.download_button(
-                                label="Descargar Evidencias ZIP",
+                                label="Descargar Evidencias ZIP Oficial",
                                 data=zip_buffer,
-                                file_name=f"Evidencias_{limpiar_texto(grupo_activo)}.zip",
+                                file_name=f"Evidencias_Oficiales_{limpiar_texto(grupo_activo)}.zip",
                                 mime="application/zip"
                             )
 
